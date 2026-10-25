@@ -23,6 +23,9 @@ nix run github:Malix-Labs/Nix_Remote-Builders-Distributed -- build .#myHeavyPack
 - **Multi-Arch Matrix**: Automatically scales and allocates native `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin` runners in parallel according to real unbuilt derivation requirements.
 - **Direct WireGuard Tunneling (Tailscale SSH)**: End-to-end encrypted connection authenticated via secretless OIDC (Workload Identity Federation) or OAuth. No port forwarding, public IPs, or firewall holes needed.
 - **Drop-in Nix Replacement**: Seamlessly prefix standard commands (`build`, `flake check`) or use `--fast` for pipelined builds with `nix-fast-build`.
+- **Binary Cache Push**: Builders push the outputs they built to [Attic](https://github.com/zhaofengli/attic) or any `nix copy` store before they shut down.
+- **Builder-Side Substitution**: Builders fetch dependencies from cache.nixos.org, your own caches and private Attic caches instead of receiving them from your machine.
+- **Callable from Forgejo/Gitea**: A composite action runs the client inside a Forgejo Actions job, so an on-prem forge can build private flakes on these builders.
 
 ## Architecture
 
@@ -319,10 +322,135 @@ Flags:
   --environment <string>: GitHub Actions environment name containing secrets
   --tailscale-tags <string>: Tailscale ACL tags to apply to runner nodes
   --keep-alive: Keep runners alive after command finishes
+  --no-builder-substitutes: Copy every input from this machine instead of letting builders use their substituters
 
 Parameters:
   ...rest <string>: Nix command and arguments (e.g. build .#default)
 ```
+
+## Binary Caches & Substitution
+
+### Substitution on builders
+
+`nix-remote` sets `builders-use-substitutes = true`, so a builder downloads
+missing inputs from its own substituters instead of receiving them from your
+machine over SSH. Pass `--no-builder-substitutes` to turn this off.
+
+Each builder trusts `cache.nixos.org`, the GitHub Actions cache (Magic Nix
+Cache, `magic_nix_cache: "false"` to disable) and whatever the caller workflow
+adds:
+
+| Input | Description |
+| :--- | :--- |
+| `substituters` / `trusted_public_keys` | Space-separated extra substituters and their keys. |
+| `extra_nix_conf` | Extra lines for the builders' `nix.conf`. |
+| `attic_server` + `attic_cache` | Adds the Attic cache as a substituter (`attic_substitute: "false"` to skip). Its substituter URL and public key are read from the server's `/_api/v1/cache-config/<cache>` unless `attic_substituter` and `attic_public_key` are set. |
+| `secrets.ATTIC_TOKEN` | Written to the builders' netrc so private Attic caches can be read. |
+| `secrets.NIX_NETRC` | netrc contents for any other authenticated substituter. |
+
+The substituter configuration is resolved before the builder joins the tailnet.
+For a tailnet-only Attic server, set `attic_substituter` and `attic_public_key`
+explicitly so that no API call is needed at that point.
+
+### Pushing built outputs
+
+When a session ends, each builder lists the store paths added since it started
+and pushes them before shutting down:
+
+- `push_paths: built` (default) pushes the outputs this builder built itself
+  (Nix marks them `ultimate`), together with their closures. Inputs that were
+  substituted or copied from the client are not pushed on their own.
+- `push_paths: all` pushes every path added during the session.
+
+| Target | Inputs |
+| :--- | :--- |
+| Attic | `attic_server`, `attic_cache`, `secrets.ATTIC_TOKEN` (push permission). `attic_push: "false"` to only substitute. Attic skips paths already signed by its upstream caches. |
+| Any Nix store | `push_to`, e.g. `s3://bucket?region=eu-west-1`, `file:///…`, `ssh-ng://cache-host`. `secrets.NIX_SIGNING_KEY` signs the paths first. `secrets.AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` for S3. |
+
+#### Backblaze B2
+
+Attic stores its chunks in S3-compatible object storage, so the usual route is
+Attic with B2 as its `[storage]` backend (`type = "s3"`, `endpoint =
+"https://s3.<region>.backblazeb2.com"`). Builders push to Attic, and Attic
+handles signing, deduplication and B2. Attic clients cannot write to the bucket
+directly.
+
+To skip Attic, push a plain Nix binary cache straight to B2 through its S3 API:
+
+```yaml
+push_to: "s3://<bucket>?endpoint=s3.<region>.backblazeb2.com&region=<region>&compression=zstd"
+secrets:
+  AWS_ACCESS_KEY_ID: ${{ secrets.B2_KEY_ID }}          # B2 application key ID
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+  NIX_SIGNING_KEY: ${{ secrets.NIX_SIGNING_KEY }}      # `nix key generate-secret`
+```
+
+Without Attic there is no chunk deduplication or garbage collection. Every
+closure path that the bucket lacks is uploaded, including ones on
+cache.nixos.org.
+
+The log reports path counts only; per-path output is shown only if a push
+fails. Pushes happen after the client has disconnected, so the cache fills a
+few seconds after `nix-remote` returns. The example
+[`examples/nix-builder.yml`](examples/nix-builder.yml) maps these inputs to
+repository variables (`ATTIC_ENDPOINT`, `ATTIC_CACHE`, …) and secrets.
+
+## Calling from Forgejo / Gitea
+
+GitHub cannot run a Forgejo workflow, and the builders should not need
+credentials for your forge. Instead the **client** runs in your Forgejo job:
+
+1. The Forgejo runner checks out and evaluates the flake. Private inputs are
+   fetched on-premises with the forge's own credentials.
+2. It dispatches the builder workflow in your GitHub runner repository and
+   joins the tailnet.
+3. GitHub builders receive only the derivations and sources they need, over
+   Tailscale SSH. They build, send the outputs back, and push them to your cache.
+
+```yaml
+# .forgejo/workflows/nix-remote.yml
+- uses: https://github.com/dweee/Nix_Remote-Builders-Distributed@main
+  with:
+    repo: <owner>/<runner-repo>                     # GitHub repository with nix-builder.yml
+    github-token: ${{ secrets.NIX_REMOTE_GITHUB_TOKEN }}
+    tailscale-authkey: ${{ secrets.TS_AUTHKEY }}    # omit if the runner host is on the tailnet
+    tailscale-tags: tag:nix-remote-client
+    args: -- build -L .#default
+```
+
+Full example: [`examples/forgejo/nix-remote.yml`](examples/forgejo/nix-remote.yml).
+
+| Input | Description |
+| :--- | :--- |
+| `args` | `nix-remote` arguments, word-split like a shell (e.g. `--x86 2 -- build .#a .#b`). |
+| `repo` | GitHub runner repository (`owner/repo`). |
+| `github-token` | Fine-grained GitHub PAT with **Actions: read and write** on `repo`. |
+| `environment` | GitHub Actions environment holding the builder secrets. |
+| `builder-tags` | Tailscale tags for the builders (default `tag:nix-builder`). |
+| `tailscale-authkey` | Auth key or OAuth client secret. Starts a userspace `tailscaled` that needs neither root nor `/dev/net/tun`; OAuth secrets become ephemeral, pre-authorized nodes. |
+| `tailscale-tags` / `tailscale-hostname` | Tags (required with an OAuth secret) and hostname for the runner node. |
+
+Requirements and caveats:
+
+- `nix` must already be on the runner's `PATH` with flakes available. The
+  action builds `nix-remote`, `gh`, `ssh`, `jq` and `tailscale` from its own
+  flake lock.
+- Builds go through remote builders, so the user running Nix must be allowed to
+  set `builders` (a trusted user, root, or a single-user install).
+- The SSH connections are made by whoever runs the build. In a single-user or
+  root container that is the job itself. With a multi-user daemon it is the
+  daemon's user (usually root), which needs tailnet access and MagicDNS.
+  Builder host keys are pinned in the builder spec, so its `known_hosts` does
+  not matter. Without a TUN device (userspace `tailscaled`), the action
+  routes `nix-builder-*` through `tailscale nc` in `~/.ssh/config`. A daemon
+  running as a different user does not read that file.
+- Allow the runner's tag in the Tailscale SSH policy:
+  ```json
+  { "action": "accept", "src": ["tag:nix-remote-client"], "dst": ["tag:nix-builder"], "users": ["runner"] }
+  ```
+  When tagging the runner, it also needs `"tagOwners": { "tag:nix-remote-client": [...] }`.
+- Keep the GitHub runner repository **private**. Builders receive your
+  derivations' sources, and the cache push runs there.
 
 ## Runner Lifecycle & Watchdog
 
@@ -335,4 +463,4 @@ Each provisioned cloud runner runs a resilient background watchdog script that g
 | **Completion Signal** | `/tmp/nix-builder-done` | - | `nix-remote` sends `ssh runner@<host> touch /tmp/nix-builder-done` as soon as the build finishes (unless `--keep-alive` is set). |
 | **Post-Build Linger**| `timeout_linger` / `--timeout-linger` | `0s` | Once `/tmp/nix-builder-done` is signaled, the runner remains alive for this extra duration before shutting down (useful for running rapid successive builds on a warm runner). |
 
-When terminating, the runner triggers post-run cleanup where `tailscale/github-action` logs out (promptly removing the ephemeral node from your Tailnet) and the GitHub Actions VM terminates.
+After the watchdog exits, the builder pushes to the configured binary caches (see [Pushing built outputs](#pushing-built-outputs)). Then the runner triggers post-run cleanup where `tailscale/github-action` logs out (promptly removing the ephemeral node from your Tailnet) and the GitHub Actions VM terminates.
