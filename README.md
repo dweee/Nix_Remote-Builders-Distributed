@@ -321,6 +321,12 @@ builders). Commands it does not recognise get one builder of this machine's
 system unless `--for` or explicit counts are given. When the command exits, the
 builders shut down and its exit code is returned.
 
+While it waits, `nix-remote` prints how many of your builder jobs GitHub is
+running or has queued, and how many other runs are active in the runner
+repository (stale sessions hold runner slots). The startup timeout only starts
+once a builder job is running, so a long GitHub queue is waited out; press
+Ctrl-C to cancel the run and release the runners.
+
 The command starts as soon as the first builder is online. The others, which
 GitHub may still be starting or queueing (macOS runners especially), are added
 to the builders file while the command runs, so one slow runner never holds it

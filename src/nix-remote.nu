@@ -568,7 +568,11 @@ def probed-gccarch [node: record, known_hosts_dir: path]: nothing -> string {
 def node-spec [node: record, known_hosts_dir: path]: nothing -> string {
     let host_key = host-key-b64 ($known_hosts_dir | path join $node.host)
     let extra = probed-gccarch $node $known_hosts_dir
-    let tokens = if $extra == "" { [] } else { $extra | split row " " | where {|t| ($t | str length) > 0 } }
+    let tokens = if $extra == "" {
+        []
+    } else {
+        $extra | split row " " | where {|t| ($t | str length) > 0 }
+    }
     let features = if ($tokens | is-empty) {
         "kvm,benchmark,big-parallel"
     } else {
@@ -597,6 +601,62 @@ def watch-late-joiners [session: record, startup: int, update: closure] {
         }
         sleep 5sec
     }
+}
+
+# Builder jobs of the given workflow runs.
+def builder-jobs [repo: string, runs: list<record>]: nothing -> list<record> {
+    $runs
+    | each {|r|
+        try {
+            gh run view $r.databaseId --repo $repo --json jobs
+            | from json
+            | get jobs
+            | where {|j| $j.name | str contains "Nix Builder" }
+        } catch { [] }
+    }
+    | flatten
+}
+
+# Where this session's builder jobs are on GitHub, and what else is active in
+# the runner repository (stale sessions hold runner slots). Null when GitHub
+# cannot be queried.
+def queue-status [repo: string, session_id: string]: nothing -> any {
+    let listed = (
+        gh run list --repo $repo --limit 30 --json databaseId,status,displayTitle
+        | complete
+    )
+    if $listed.exit_code != 0 {
+        return null
+    }
+    let runs = try {
+        $listed.stdout | from json
+    } catch {
+        return null
+    }
+    let tag = $"[($session_id)]"
+    let mine = $runs | where {|r| $r.displayTitle | str contains $tag }
+    let others = $runs | where {|r| ($r.status in [queued in_progress waiting pending requested]) and not ($r.displayTitle | str contains $tag) }
+    let my_jobs = builder-jobs $repo $mine
+    let other_jobs = builder-jobs $repo ($others | first 5)
+    let count = {|jobs: list<record>, states: list<string>|
+        $jobs | where {|j| $j.status in $states } | length
+    }
+    {
+        up: (do $count $my_jobs [in_progress])
+        queued: (do $count $my_jobs [queued waiting pending requested])
+        other_runs: ($others | length)
+        other_up: (do $count $other_jobs [in_progress])
+        other_queued: (do $count $other_jobs [queued waiting pending requested])
+    }
+}
+
+def queue-line [repo: string, status: record]: nothing -> string {
+    let others = if $status.other_runs == 0 {
+        "no other active runs"
+    } else {
+        $"($status.other_runs) other active run\(s) with ($status.other_up) builder\(s) running and ($status.other_queued) queued"
+    }
+    $"  GitHub \(($repo)\): ($status.up) of your builders running, ($status.queued) queued; ($others)"
 }
 
 # Dispatch the builders and wait until all are reachable over Tailscale SSH.
@@ -685,12 +745,31 @@ def start-session [
     }
     let start_time = (date now)
     mut ready_hosts = []
+    mut tick = 0
+    mut last_line = ""
+    mut running_since: any = null
+    print "Press Ctrl-C to cancel and release the runners."
 
     while ($ready_hosts | length) < $target {
-        let elapsed = ((date now) - $start_time) // 1sec
-        if $timeouts.startup > 0 and $elapsed >= $timeouts.startup {
-            # GitHub can queue some jobs (macOS runners especially). Carry on
-            # with the builders that are up rather than discarding them.
+        # GitHub queues jobs when runners are busy (macOS especially). The
+        # startup timeout only counts once a builder job is actually running.
+        let status = if $provider == "gha" and ($tick mod 3) == 0 { queue-status $settings.repo $session_id } else { null }
+        $tick += 1
+        if $status != null {
+            let line = queue-line $settings.repo $status
+            if $line != $last_line {
+                print $line
+                $last_line = $line
+            }
+            if $status.up > 0 and $running_since == null {
+                $running_since = (date now)
+            }
+        }
+        let clock = if $running_since != null { $running_since } else { $start_time }
+        let queued_only = $running_since == null and ($provider == "gha") and $last_line != ""
+        let elapsed = ((date now) - $clock) // 1sec
+        if $timeouts.startup > 0 and $elapsed >= $timeouts.startup and not $queued_only {
+            # Carry on with the builders that are up rather than discarding them.
             if ($ready_hosts | is-not-empty) {
                 print --stderr $"\nWarning: only ($ready_hosts | length) of ($nodes | length) builders came online within ($timeouts.startup)s; continuing without the rest."
                 break
@@ -720,7 +799,14 @@ def start-session [
         }
 
         if ($ready_hosts | length) < $target {
-            sleep 5sec
+            try { sleep 5sec } catch {
+                print --stderr "\nCancelled. Releasing the runners..."
+                let run = session-run $settings.repo $session_id
+                if $run != null {
+                    gh run cancel $run.databaseId --repo $settings.repo | complete | ignore
+                }
+                do $fail
+            }
         }
     }
 
