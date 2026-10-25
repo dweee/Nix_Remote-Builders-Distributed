@@ -126,6 +126,16 @@ on:
         description: "Which paths to push: 'built' (outputs built on the builder) or 'all' (every path added during the session)"
         type: string
         default: "built"
+
+      # Public runner repositories: keep metadata out of logs and run history.
+      purge_runs:
+        description: "Delete this workflow's earlier completed runs (needs `actions: write` from the caller)"
+        type: string
+        default: "false"
+      verbose_logs:
+        description: "Print per-path output when a cache push fails"
+        type: string
+        default: "false"
     secrets:
       TS_OAUTH_CLIENT_ID:
         description: "Tailscale OAuth Client ID"
@@ -153,6 +163,29 @@ on:
         required: false
 
 jobs:
+  purge:
+    name: "Purge earlier runs"
+    if: ${{ inputs.purge_runs == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: "Delete completed runs"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          ids=$(gh api --paginate "repos/$REPO/actions/runs?status=completed&per_page=100" \
+            --jq ".workflow_runs[] | select(.id != $RUN_ID) | .id")
+          count=0
+          for id in $ids; do
+            gh api -X DELETE "repos/$REPO/actions/runs/$id" >/dev/null && count=$((count + 1))
+          done
+          echo "Deleted ${count} earlier run(s)."
+
   builder:
     name: "Nix Builder: ${{ matrix.id }}"
     runs-on: ${{ matrix.os }}
@@ -164,6 +197,26 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.matrix) }}
     steps:
+      # Masks apply to every later line of this job, including other actions'
+      # output, so cache URLs and keys never appear in (public) logs.
+      - name: "Mask configuration"
+        shell: bash
+        env:
+          VALUES: >-
+            ${{ inputs.substituters }} ${{ inputs.trusted_public_keys }}
+            ${{ inputs.attic_server }} ${{ inputs.attic_substituter }}
+            ${{ inputs.attic_public_key }} ${{ inputs.push_to }}
+          ATTIC_SERVER: ${{ inputs.attic_server }}
+          ATTIC_CACHE: ${{ inputs.attic_cache }}
+        run: |
+          mask() { [ -n "$1" ] && echo "::add-mask::$1"; return 0; }
+          for v in $VALUES; do
+            mask "$v"
+            mask "$(sed -E 's#^[a-z0-9+]+://([^/:?]+).*#\1#' <<<"$v")"
+          done
+          mask "${ATTIC_SERVER%/}"
+          mask "$ATTIC_CACHE"
+
       - name: "Checkout repository"
         uses: actions/checkout@v7
 
@@ -206,16 +259,18 @@ jobs:
                 auth=(-H "Authorization: Bearer $ATTIC_TOKEN")
               fi
               if ! cfg=$(curl -fsSL --retry 3 "${auth[@]}" "$server/_api/v1/cache-config/$ATTIC_CACHE"); then
-                echo "::error::Could not read Attic cache '$ATTIC_CACHE' from $server. Provide ATTIC_TOKEN, or set attic_substituter and attic_public_key."
+                echo "::error::Could not read the Attic cache configuration. Provide ATTIC_TOKEN, or set attic_substituter and attic_public_key."
                 exit 1
               fi
               sub="${sub:-$(jq -r '.substituter_endpoint // empty' <<<"$cfg")}"
               key="${key:-$(jq -r '.public_key // empty' <<<"$cfg")}"
             fi
             if [ -z "$sub" ] || [ -z "$key" ]; then
-              echo "::error::Could not resolve the Attic substituter or public key for cache '$ATTIC_CACHE'."
+              echo "::error::Could not resolve the Attic substituter or public key."
               exit 1
             fi
+            echo "::add-mask::$sub"
+            echo "::add-mask::$key"
             substituters="$substituters $sub"
             keys="$keys $key"
 
@@ -350,6 +405,7 @@ jobs:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
           PUSH_TO: ${{ inputs.push_to }}
           NIX_SIGNING_KEY: ${{ secrets.NIX_SIGNING_KEY }}
+          VERBOSE_LOGS: ${{ inputs.verbose_logs }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
@@ -403,10 +459,13 @@ jobs:
             exit 0
           fi
 
-          # Per-path output stays in a log file and is only shown on failure.
+          # Per-path output stays in a log file; it is shown on failure only
+          # with verbose_logs, since it names store paths.
           fail() {
             echo "::error::$1"
-            tail -n 40 "$log" || true
+            if [ "$VERBOSE_LOGS" = "true" ]; then
+              tail -n 40 "$log" || true
+            fi
             exit 1
           }
 
@@ -416,7 +475,7 @@ jobs:
               || fail "attic login failed"
             xargs "$attic_bin" push "nix-remote:$ATTIC_CACHE" < "$paths" >> "$log" 2>&1 \
               || fail "attic push failed"
-            echo "Pushed ${count} path(s) and their closures to Attic cache '$ATTIC_CACHE'."
+            echo "Pushed ${count} path(s) and their closures to Attic."
           fi
 
           if [ -n "$PUSH_TO" ]; then

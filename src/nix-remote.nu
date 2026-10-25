@@ -115,6 +115,10 @@ def resolve-settings [
             ($config | get --optional machines_file)
             ($runtime_dir | path join "nix-remote" "machines")
         ])
+        # Public runner repositories: keep the command out of run names and
+        # delete each session's run once it has finished.
+        show_target: (($config | get --optional show_target) == true)
+        delete_runs: (($config | get --optional delete_runs) == true)
     }
 }
 
@@ -454,6 +458,27 @@ def signal-done [nodes: list<any>] {
     } | ignore
 }
 
+# Delete a session's workflow run once it completes, from a detached process,
+# so the run and its logs do not stay visible in the runner repository.
+def reap-run [settings: record, session_id: string] {
+    if not $settings.delete_runs {
+        return
+    }
+    let script = '
+        for _ in $(seq 120); do
+            id=$(gh run list --repo "$1" --limit 50 --json databaseId,status,displayTitle \
+                --jq ".[] | select(.status == \"completed\") | select(.displayTitle | contains(\"[$2]\")) | .databaseId" \
+                2>/dev/null | head -n 1)
+            if [ -n "$id" ]; then
+                gh api -X DELETE "repos/$1/actions/runs/$id" >/dev/null 2>&1
+                exit 0
+            fi
+            sleep 15
+        done'
+    ^bash -c 'nohup bash -c "$0" _ "$1" "$2" >/dev/null 2>&1 &' $script $settings.repo $session_id
+    print "The session's workflow run will be deleted once it finishes."
+}
+
 # Dispatch the builders and wait until all are reachable over Tailscale SSH.
 # Returns {id, nodes, specs}; exits on failure after signalling any started builders.
 def start-session [
@@ -481,12 +506,15 @@ def start-session [
     let fail = {||
         try { rm --recursive --force $known_hosts_dir }
         signal-done $nodes
+        reap-run $settings $session_id
         exit 1
     }
+    let shown_target = if $settings.show_target { $target_desc } else { "" }
 
     if $provider == "gha" {
+        let target_note = if $settings.show_target { "" } else { " [not sent to GitHub]" }
         let env_log = if $settings.environment != null { $"\n  Environment: ($settings.environment)" } else { "" }
-        print $"\nDispatching GitHub Actions workflow on ($settings.repo)...($env_log)\n  Tailscale Tags: ($settings.tags)\n  Session: ($session_id)\n  Target: ($target_desc)\n  Total builders: ($nodes | length) \(x86: ($counts.x86), arm: ($counts.arm), darwin: ($counts.darwin)\)"
+        print $"\nDispatching GitHub Actions workflow on ($settings.repo)...($env_log)\n  Tailscale Tags: ($settings.tags)\n  Session: ($session_id)\n  Target: ($target_desc)($target_note)\n  Total builders: ($nodes | length) \(x86: ($counts.x86), arm: ($counts.arm), darwin: ($counts.darwin)\)"
 
         mut gh_args = [
             workflow
@@ -497,7 +525,7 @@ def start-session [
             -f
             $"session_id=($session_id)"
             -f
-            $"target=($target_desc)"
+            $"target=($shown_target)"
             -f
             $"matrix=($matrix_json)"
             -f
@@ -782,6 +810,7 @@ def main [
     let do_cleanup = {|keep: bool|
         if not $keep {
             signal-done $nodes
+            reap-run $settings $session.id
         } else {
             print "\nKeep-alive enabled. Builders will stay running until their timeout."
         }
@@ -934,6 +963,7 @@ def "main exec" [
     } else {
         signal-done $session.nodes
     }
+    reap-run $settings $session.id
     exit $code
 }
 
@@ -1012,6 +1042,7 @@ def "main down" [
     for s in $sessions {
         print $"Stopping session ($s.id) \(($s.nodes | length) builders\)"
         signal-done $s.nodes
+        reap-run ($settings | merge {repo: ($s.repo? | default $settings.repo)}) $s.id
         unregister-session $settings.machines_file $s.id
     }
 }

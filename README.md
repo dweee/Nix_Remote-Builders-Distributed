@@ -471,6 +471,27 @@ few seconds after `nix-remote` returns. The example
 [`examples/nix-builder.yml`](examples/nix-builder.yml) maps these inputs to
 repository variables (`ATTIC_ENDPOINT`, `ATTIC_CACHE`, …) and secrets.
 
+## Public Runner Repositories
+
+GitHub Actions minutes are free for public repositories, so the runner
+repository can be public. Builders receive derivations only over Tailscale
+SSH, never through the repository. Runs, job names and logs are public,
+though. The template and client keep metadata out of them:
+
+| What | How |
+| :--- | :--- |
+| Command being built | Not sent: `target` stays empty and the run name is `nix-remote [<random session id>]`. Set `show_target = true` in `config.toml` to send it. |
+| Cache URLs, keys, Attic endpoint and cache name | `::add-mask::` before any other step, so the Nix installer and later steps print `***`. |
+| Store paths | Pushes log counts only. Per-path output needs `verbose_logs: "true"`. |
+| Build outputs in the Actions cache | `magic_nix_cache: "false"`: workflows from fork pull requests can read a public repository's caches. |
+| Run history and logs | `delete_runs = true` in `config.toml`: a detached process deletes the session's run once it completes. `purge_runs: "true"` also deletes earlier completed runs when a session starts, as a backstop. Set log retention to 1 day. |
+
+Still visible while a run exists: that a run happened, its duration, the
+builder job names (`x86-0`, `darwin-0`), runner images, and the tailnet tag
+and random builder hostnames in the Tailscale step. Secrets are never exposed
+to fork pull requests. Also require approval for outside contributors'
+workflows (Settings → Actions → General).
+
 ## Calling from Forgejo / Gitea
 
 GitHub cannot run a Forgejo workflow, and the builders should not need

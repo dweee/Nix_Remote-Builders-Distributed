@@ -4,7 +4,16 @@
 # This workflow sets up on-demand distributed Nix remote builders using
 # the reusable workflow from dweee/Nix_Remote-Builders-Distributed.
 #
-# Keep this repository private: builders receive your derivations' sources.
+# Public or private: builders receive only the derivations they build over
+# Tailscale SSH, never through this repository. In a public repository, runs
+# and logs are visible, so this template keeps metadata out of them:
+#   - the run name is only the random session ID;
+#   - cache URLs and keys are masked in every log line;
+#   - Magic Nix Cache is off (fork pull requests can read Actions caches);
+#   - earlier completed runs are deleted at the start of each session, and
+#     nix-remote deletes each session's run when it ends (`delete_runs = true`).
+# Also set log retention to 1 day and require approval for outside
+# contributors' workflows in the repository's Actions settings.
 #
 # Optional cache configuration comes from repository variables and secrets:
 #   vars.NIX_SUBSTITUTERS          extra substituters (space-separated)
@@ -20,7 +29,9 @@
 #   secrets.NIX_SIGNING_KEY        signs paths before NIX_PUSH_TO copies
 
 name: "Nix Remote Builder"
-run-name: "${{ inputs.target != '' && format('Nix Remote: {0} [{1}]', inputs.target, inputs.session_id) || format('Nix Remote: [{0}]', inputs.session_id) }}"
+# Only the random session ID; nix-remote leaves `target` empty unless
+# `show_target = true` is set in its config.
+run-name: "nix-remote [${{ inputs.session_id }}]"
 
 on:
   workflow_dispatch:
@@ -64,6 +75,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      actions: write # purge_runs deletes earlier runs
     uses: dweee/Nix_Remote-Builders-Distributed/.github/workflows/nix-builder.yml@main
     with:
       # Optional: specify a GitHub Actions Environment name if your Tailscale
@@ -86,4 +98,6 @@ jobs:
       attic_public_key: ${{ vars.ATTIC_PUBLIC_KEY }}
       attic_push: ${{ vars.ATTIC_PUSH_ENABLED != 'false' && 'true' || 'false' }}
       push_to: ${{ vars.NIX_PUSH_TO }}
+      magic_nix_cache: "false"
+      purge_runs: "true"
     secrets: inherit
