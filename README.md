@@ -321,9 +321,14 @@ builders). Commands it does not recognise get one builder of this machine's
 system unless `--for` or explicit counts are given. When the command exits, the
 builders shut down and its exit code is returned.
 
-The builders reach the command through `NIX_CONFIG` (`builders`,
+The command starts as soon as the first builder is online. The others, which
+GitHub may still be starting or queueing (macOS runners especially), are added
+to the builders file while the command runs, so one slow runner never holds it
+up. Builders that have not joined within `--timeout-startup` are given up on.
+
+The builders reach the command through `NIX_CONFIG` (`builders = @<file>`,
 `builders-use-substitutes`, `max-jobs = --local-jobs`), which the nix-daemon
-honours for trusted users. With the system module below, `exec` also registers
+honours for trusted users. `exec` rewrites that file as builders join. With the system module below, `exec` also registers
 the session with the daemon, so builds started by root or other users use the
 builders too (for example `sudo nixos-rebuild`).
 

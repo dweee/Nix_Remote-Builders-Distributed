@@ -527,6 +527,45 @@ def reap-run [settings: record, session_id: string] {
     }
 }
 
+# Which of these builders accept SSH now. Learns each host key into the
+# per-host known_hosts file so it can be pinned in the builder spec.
+def probe-nodes [nodes: list<record>, known_hosts_dir: path]: nothing -> list<record> {
+    $nodes
+    | par-each {|node|
+        let known_hosts = $known_hosts_dir | path join $node.host
+        let probe = ssh -q -o StrictHostKeyChecking=accept-new -o $"UserKnownHostsFile=($known_hosts)" -o HashKnownHosts=no -o ConnectTimeout=2 -o BatchMode=yes $"runner@($node.host)" "true" | complete
+        if ($probe.exit_code == 0) { $node } else { null }
+    }
+    | compact
+}
+
+# Nix machine spec for a builder, pinning the host key the probe learned.
+def node-spec [node: record, known_hosts_dir: path]: nothing -> string {
+    let host_key = host-key-b64 ($known_hosts_dir | path join $node.host)
+    $"ssh-ng://runner@($node.host)?remote-program=/nix/var/nix/profiles/default/bin/nix-daemon ($node.system) - ($node.cores) 1 kvm,benchmark,big-parallel - ($host_key)"
+}
+
+# Keep probing builders that were still starting when the command began, and
+# hand the grown list to `update` as each one joins. Gives up after `startup`
+# seconds.
+def watch-late-joiners [session: record, startup: int, update: closure] {
+    mut pending = $session.pending
+    mut specs = $session.specs
+    mut nodes = $session.nodes
+    let started = (date now)
+    while ($pending | is-not-empty) and ($startup <= 0 or ((date now) - $started) // 1sec < $startup) {
+        let up = probe-nodes $pending $session.known_hosts_dir
+        if ($up | is-not-empty) {
+            let hosts = $up | get host
+            $specs ++= ($up | each {|n| node-spec $n $session.known_hosts_dir })
+            $nodes ++= ($up | select host system)
+            $pending = ($pending | where {|n| not ($n.host in $hosts) })
+            do $update $specs $nodes
+        }
+        sleep 5sec
+    }
+}
+
 # Dispatch the builders and wait until all are reachable over Tailscale SSH.
 # Returns {id, nodes, specs}; exits on failure after signalling any started builders.
 def start-session [
@@ -535,6 +574,7 @@ def start-session [
     counts: record
     target_desc: string
     timeouts: record
+    wait_for: int # builders to wait for before returning; <= 0 waits for all
 ]: nothing -> record {
     let counts = if ($counts.x86 + $counts.arm + $counts.darwin) <= 0 {
         {x86: 1, arm: 0, darwin: 0}
@@ -600,11 +640,20 @@ def start-session [
         do $fail
     }
 
-    print "\nWaiting for builders to join Tailnet (Tailscale SSH)..."
+    let target = if $wait_for > 0 and $wait_for < ($nodes | length) {
+        $wait_for
+    } else {
+        $nodes | length
+    }
+    if $target < ($nodes | length) {
+        print $"\nWaiting for the first builder to join Tailnet \(Tailscale SSH\); the other (($nodes | length) - $target) join as they start..."
+    } else {
+        print "\nWaiting for builders to join Tailnet (Tailscale SSH)..."
+    }
     let start_time = (date now)
     mut ready_hosts = []
 
-    while ($ready_hosts | length) < ($nodes | length) {
+    while ($ready_hosts | length) < $target {
         let elapsed = ((date now) - $start_time) // 1sec
         if $timeouts.startup > 0 and $elapsed >= $timeouts.startup {
             # GitHub can queue some jobs (macOS runners especially). Carry on
@@ -630,43 +679,36 @@ def start-session [
             }
         }
 
-        let newly_ready = ($nodes
-            | where not ($it.host in $ready_hosts)
-            | par-each {|node|
-                let known_hosts = $known_hosts_dir | path join $node.host
-                let probe = ssh -q -o StrictHostKeyChecking=accept-new -o $"UserKnownHostsFile=($known_hosts)" -o HashKnownHosts=no -o ConnectTimeout=2 -o BatchMode=yes $"runner@($node.host)" "true" | complete
-                if ($probe.exit_code == 0) {
-                    $node
-                } else {
-                    null
-                }
-            }
-            | compact
-        )
-
-        for node in $newly_ready {
+        for node in (
+            probe-nodes ($nodes | where not ($it.host in $ready_hosts)) $known_hosts_dir
+        ) {
             $ready_hosts ++= [$node.host]
             print $"  Builder online: ($node.host) \(($node.system)\)"
         }
 
-        if ($ready_hosts | length) < ($nodes | length) {
+        if ($ready_hosts | length) < $target {
             sleep 5sec
         }
     }
 
-    let nodes = $nodes | where {|node| $node.host in $ready_hosts }
-    print $"\n($nodes | length) builders online."
+    let ready = $nodes | where {|node| $node.host in $ready_hosts }
+    let pending = $nodes | where {|node| not ($node.host in $ready_hosts) }
+    print $"\n($ready | length) of ($nodes | length) builders online."
 
-    let specs = ($nodes | each {|node|
-        let host_key = host-key-b64 ($known_hosts_dir | path join $node.host)
-        $"ssh-ng://runner@($node.host)?remote-program=/nix/var/nix/profiles/default/bin/nix-daemon ($node.system) - ($node.cores) 1 kvm,benchmark,big-parallel - ($host_key)"
-    })
-    try { rm --recursive --force $known_hosts_dir }
+    let specs = $ready | each {|node| node-spec $node $known_hosts_dir }
+    # Callers that wait for late builders (wait_for > 0) keep probing, so keep
+    # the pinned host keys for them.
+    if $wait_for <= 0 or ($pending | is-empty) {
+        try { rm --recursive --force $known_hosts_dir }
+    }
 
     {
         id: $session_id
-        nodes: ($nodes | select host system)
+        nodes: ($ready | select host system)
         specs: $specs
+        pending: $pending
+        all_nodes: ($nodes | select host system)
+        known_hosts_dir: $known_hosts_dir
     }
 }
 
@@ -703,7 +745,7 @@ def write-machines [machines_file: path] {
 def register-session [machines_file: path, session: record] {
     let dir = sessions-dir $machines_file
     mkdir $dir
-    write-shared ($dir | path join $"($session.id).json") ($session | to json)
+    write-shared ($dir | path join $"($session.id).json") ($session | select id nodes specs repo created | to json)
     write-machines $machines_file
 }
 
@@ -859,8 +901,8 @@ def main [
         startup: $timeout_startup
         idle: $timeout_idle
         linger: $timeout_linger
-    })
-    let nodes = $session.nodes
+    } 0)
+    let nodes = $session.all_nodes
 
     let do_cleanup = {|keep: bool|
         if not $keep {
@@ -993,30 +1035,59 @@ def "main exec" [
     check-cmd { tailscale status } "Error: Tailscale is not running, not authenticated, or not installed.\nPlease run 'tailscale up' or 'tailscale login'."
 
     let settings = resolve-settings $repo $environment $tailscale_tags $machines_file
+    # Start the command once the first builder is up; the rest join the
+    # builders file below as they come online.
     let session = (start-session $provider $settings $counts ($cmd | str join ' ') {
         startup: $timeout_startup
         idle: $timeout_idle
         linger: $timeout_linger
-    })
+    } 1)
+
+    let work_dir = (mktemp --directory --tmpdir nix-remote-run.XXXXXX)
+    let builders_file = $work_dir | path join "machines"
+    let write_builders = {|specs: list<string>| write-shared $builders_file ($specs | str join "\n" | $in + "\n") }
+    do $write_builders $session.specs
 
     let shared = machines-file-usable $settings.machines_file
+    let session_meta = {
+        repo: $settings.repo
+        created: (date now | format date "%+")
+    }
     if $shared {
-        register-session $settings.machines_file (
-            $session
-            | merge {repo: $settings.repo, created: (date now | format date "%+")}
-        )
+        register-session $settings.machines_file ($session | merge $session_meta)
+    }
+
+    if ($session.pending | is-not-empty) {
+        let update = {|specs: list<string>, nodes: list<record>|
+            do $write_builders $specs
+            if $shared {
+                register-session $settings.machines_file (
+                    $session
+                    | merge {specs: $specs, nodes: $nodes}
+                    | merge $session_meta
+                )
+            }
+        }
+        job spawn { watch-late-joiners $session $timeout_startup $update } | ignore
     }
 
     print $"\nRunning: ($cmd | str join ' ')\n"
-    let code = do $run (nix-config-with $session.specs $local_jobs (not $no_builder_substitutes))
+    let code = do $run (
+        (nix-config-with
+            [$"@($builders_file)"]
+            $local_jobs
+            (not $no_builder_substitutes)
+        )
+    )
 
     if $shared {
         unregister-session $settings.machines_file $session.id
     }
+    try { rm --recursive --force $work_dir $session.known_hosts_dir }
     if $keep_alive {
         print "\nKeep-alive enabled. Builders will stay running until their timeout."
     } else {
-        signal-done $session.nodes
+        signal-done $session.all_nodes
     }
     reap-run $settings $session.id
     exit $code
@@ -1073,7 +1144,7 @@ def "main up" [
         startup: $timeout_startup
         idle: $timeout_idle
         linger: 0
-    })
+    } 0)
     register-session $settings.machines_file (
         $session
         | merge {repo: $settings.repo, created: (date now | format date "%+")}
