@@ -246,9 +246,9 @@ jobs:
 
       - name: "Probe CPU architectures"
         id: gccarch
-        # Same commit as this workflow file. A relative uses: would look in the
-        # caller (dweee/nix-builders), which only has the thin dispatch workflow.
-        uses: dweee/Nix_Remote-Builders-Distributed/.github/actions/probe-gccarch@${{ github.job_workflow_sha }}
+        # Relative to this workflow file, so the caller repo (nix-builders)
+        # does not need a copy of the action.
+        uses: ./.github/actions/probe-gccarch
 
       - name: "Resolve substituters"
         id: nix-conf
