@@ -1,0 +1,181 @@
+name: "Nix Remote Builders Distributed"
+description: >-
+  Run nix-remote from another CI system (Forgejo/Gitea Actions or GitHub Actions):
+  evaluate a flake on this runner and build it on on-demand GitHub Actions
+  builders over Tailscale SSH.
+author: "Malix-Labs"
+branding:
+  icon: "cpu"
+  color: "blue"
+
+inputs:
+  args:
+    description: >-
+      Arguments for nix-remote, e.g. "build -L .#default" or
+      "--x86 2 -- build .#a .#b". Parsed with shell word splitting.
+    required: true
+  repo:
+    description: "GitHub repository hosting the runner workflow (owner/repo)"
+    required: true
+  github-token:
+    description: >-
+      GitHub token with Actions read/write on `repo` (fine-grained PAT).
+      Used to dispatch and watch the builder workflow.
+    required: true
+  environment:
+    description: "GitHub Actions environment containing the builder secrets"
+    required: false
+    default: ""
+  builder-tags:
+    description: "Tailscale ACL tags applied to the builder nodes"
+    required: false
+    default: "tag:nix-builder"
+  tailscale-authkey:
+    description: >-
+      Tailscale auth key or OAuth client secret used to join this runner to the
+      tailnet as an ephemeral node. Leave empty when the runner is already on the
+      tailnet.
+    required: false
+    default: ""
+  tailscale-tags:
+    description: "Tags for this runner's node (required with an OAuth client secret)"
+    required: false
+    default: ""
+  tailscale-hostname:
+    description: "Hostname for this runner's node"
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: "Check prerequisites"
+      shell: bash
+      run: |
+        if ! command -v nix >/dev/null 2>&1; then
+          echo "::error::Nix is required on the runner. Install it before this action."
+          exit 1
+        fi
+
+    - name: "Prepare tools"
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        state="${RUNNER_TEMP:-/tmp}/nix-remote-client"
+        mkdir -p "$state/bin" "$state/tailscale-bin"
+        nixf=(--extra-experimental-features "nix-command flakes")
+        # Tools come from the action's own flake lock.
+        nix "${nixf[@]}" build --no-link --print-out-paths \
+          --inputs-from "path:$ACTION_PATH" \
+          "path:$ACTION_PATH#nix-remote" nixpkgs#gh nixpkgs#openssh nixpkgs#jq \
+          > "$state/tools"
+        while read -r out; do
+          for bin in "$out"/bin/*; do
+            ln -sf "$bin" "$state/bin/"
+          done
+        done < "$state/tools"
+        # Kept off PATH so a host tailscaled keeps its matching CLI.
+        ts=$(nix "${nixf[@]}" build --no-link --print-out-paths \
+          --inputs-from "path:$ACTION_PATH" nixpkgs#tailscale)
+        ln -sf "$ts"/bin/* "$state/tailscale-bin/"
+        echo "$state/bin" >> "$GITHUB_PATH"
+
+    - name: "Join tailnet"
+      shell: bash
+      env:
+        TS_AUTHKEY: ${{ inputs.tailscale-authkey }}
+        TS_TAGS: ${{ inputs.tailscale-tags }}
+        TS_HOSTNAME: ${{ inputs.tailscale-hostname }}
+      run: |
+        set -euo pipefail
+        state="${RUNNER_TEMP:-/tmp}/nix-remote-client"
+        bin="$state/bin"
+        tsbin="$state/tailscale-bin"
+        export PATH="$bin:$PATH"
+
+        if [ -z "$TS_AUTHKEY" ]; then
+          # Use the host's tailscaled.
+          if ! tailscale status >/dev/null 2>&1; then
+            echo "::error::This runner is not on a tailnet and no tailscale-authkey was given."
+            exit 1
+          fi
+          tun=$(tailscale status --json | jq -r 'if .TUN == false then "false" else "true" end' 2>/dev/null || echo true)
+          ts_cli=$(command -v tailscale)
+        else
+          # Userspace tailscaled: needs no root, no /dev/net/tun.
+          sock="$state/tailscaled.sock"
+          "$tsbin/tailscaled" --tun=userspace-networking --state=mem: \
+            --socket="$sock" --statedir="$state/tailscale" \
+            > "$state/tailscaled.log" 2>&1 &
+          echo $! > "$state/tailscaled.pid"
+          for _ in $(seq 30); do
+            [ -S "$sock" ] && break
+            sleep 1
+          done
+
+          key="$TS_AUTHKEY"
+          case "$key" in
+            tskey-client-*) [[ "$key" == *\?* ]] || key="$key?ephemeral=true&preauthorized=true" ;;
+          esac
+          up=(--authkey="$key" --hostname="${TS_HOSTNAME:-nix-remote-client-${GITHUB_RUN_ID:-$$}}")
+          if [ -n "$TS_TAGS" ]; then
+            up+=(--advertise-tags="$TS_TAGS")
+          fi
+          "$tsbin/tailscale" --socket="$sock" up "${up[@]}"
+          tun=false
+          # Lets nix-remote's `tailscale status` check find this daemon.
+          printf '#!/bin/sh\nexec %q --socket=%q "$@"\n' "$tsbin/tailscale" "$sock" > "$bin/tailscale"
+          chmod +x "$bin/tailscale"
+          ts_cli="$bin/tailscale"
+        fi
+
+        # Builders are reached as nix-builder-* over Tailscale SSH. Without a TUN
+        # device, route SSH through `tailscale nc`.
+        mkdir -p "$HOME/.ssh"
+        chmod 700 "$HOME/.ssh"
+        conf="$HOME/.ssh/config"
+        touch "$conf"
+        sed -i.bak '/^# BEGIN nix-remote$/,/^# END nix-remote$/d' "$conf"
+        {
+          echo "# BEGIN nix-remote"
+          echo "Host nix-builder-*"
+          if [ "$tun" = "false" ]; then
+            echo "  ProxyCommand $ts_cli nc %h %p"
+          fi
+          echo "# END nix-remote"
+        } >> "$conf"
+        chmod 600 "$conf"
+
+    - name: "Build on remote builders"
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_HOST: github.com
+        NIX_REMOTE_ARGS: ${{ inputs.args }}
+        NIX_REMOTE_REPO: ${{ inputs.repo }}
+        NIX_REMOTE_ENVIRONMENT: ${{ inputs.environment }}
+        NIX_REMOTE_TAGS: ${{ inputs.builder-tags }}
+      run: |
+        set -euo pipefail
+        # Word-split the args input (written by the workflow author).
+        args=()
+        eval "args=($NIX_REMOTE_ARGS)"
+        flags=(--repo "$NIX_REMOTE_REPO" --tailscale-tags "$NIX_REMOTE_TAGS")
+        if [ -n "$NIX_REMOTE_ENVIRONMENT" ]; then
+          flags+=(--environment "$NIX_REMOTE_ENVIRONMENT")
+        fi
+        nix-remote "${flags[@]}" "${args[@]}"
+
+    - name: "Leave tailnet"
+      if: ${{ always() && inputs.tailscale-authkey != '' }}
+      shell: bash
+      run: |
+        state="${RUNNER_TEMP:-/tmp}/nix-remote-client"
+        if [ -x "$state/bin/tailscale" ]; then
+          "$state/bin/tailscale" logout || true
+        fi
+        if [ -f "$state/tailscaled.pid" ]; then
+          kill "$(cat "$state/tailscaled.pid")" 2>/dev/null || true
+        fi

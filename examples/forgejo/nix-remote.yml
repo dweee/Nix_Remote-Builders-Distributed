@@ -1,0 +1,45 @@
+# Copy this file to a Forgejo (or Gitea) repository at:
+# .forgejo/workflows/nix-remote.yml
+#
+# The Forgejo runner evaluates the flake, so private inputs are fetched
+# on-premises with Forgejo's own credentials. GitHub Actions builders receive
+# only the derivations and sources they build, over Tailscale SSH, and push
+# what they build to the cache configured in the GitHub runner repository.
+#
+# Secrets in this Forgejo repository:
+#   NIX_REMOTE_GITHUB_TOKEN  fine-grained GitHub PAT, Actions read/write on the runner repo
+#   TS_AUTHKEY               Tailscale auth key or OAuth client secret (omit when
+#                            the runner host is already on the tailnet)
+# Variables:
+#   NIX_REMOTE_REPO          GitHub runner repository (owner/repo)
+
+name: nix-remote
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+
+      # Any Nix installation works; the action requires `nix` on PATH and a
+      # nix.conf where this user may set `builders`.
+      - name: Install Nix
+        run: |
+          if ! command -v nix >/dev/null; then
+            curl -fsSL https://install.determinate.systems/nix \
+              | sh -s -- install linux --init none --no-confirm
+            echo /nix/var/nix/profiles/default/bin >> "$GITHUB_PATH"
+          fi
+
+      - uses: https://github.com/dweee/Nix_Remote-Builders-Distributed@main
+        with:
+          repo: ${{ vars.NIX_REMOTE_REPO }}
+          github-token: ${{ secrets.NIX_REMOTE_GITHUB_TOKEN }}
+          tailscale-authkey: ${{ secrets.TS_AUTHKEY }}
+          tailscale-tags: tag:nix-remote-client
+          args: --x86 1 -- build -L --print-out-paths .#default
