@@ -469,8 +469,12 @@ cache.nixos.org.
 The log reports path counts only; per-path output is shown only if a push
 fails. Pushes happen after the client has disconnected, so the cache fills a
 few seconds after `nix-remote` returns. The example
-[`examples/nix-builder.yml`](examples/nix-builder.yml) maps these inputs to
-repository variables (`ATTIC_ENDPOINT`, `ATTIC_CACHE`, …) and secrets.
+[`examples/nix-builder.yml`](examples/nix-builder.yml) reads these settings
+from repository secrets (`ATTIC_ENDPOINT`, `ATTIC_CACHE`, `NIX_SUBSTITUTERS`, …;
+see the file header). Use secrets rather than `with:` inputs or variables in a
+public repository: GitHub prints those in the run log before any mask applies,
+but masks secrets everywhere. An input, when set, takes precedence over the
+matching secret.
 
 ## Public Runner Repositories
 

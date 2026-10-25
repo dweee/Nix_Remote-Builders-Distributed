@@ -15,18 +15,20 @@
 # Also set log retention to 1 day and require approval for outside
 # contributors' workflows in the repository's Actions settings.
 #
-# Optional cache configuration comes from repository variables and secrets:
-#   vars.NIX_SUBSTITUTERS          extra substituters (space-separated)
-#   vars.NIX_TRUSTED_PUBLIC_KEYS   their public keys (space-separated)
-#   vars.ATTIC_ENDPOINT            Attic server, e.g. https://attic.example.com
-#   vars.ATTIC_CACHE               Attic cache name
-#   vars.ATTIC_SUBSTITUTER         optional; resolved from the server when unset
-#   vars.ATTIC_PUBLIC_KEY          optional; resolved from the server when unset
-#   vars.ATTIC_PUSH_ENABLED        set to "false" to substitute without pushing
-#   vars.NIX_PUSH_TO               generic `nix copy --to` store URI
-#   secrets.ATTIC_TOKEN            Attic token (pull + push)
-#   secrets.NIX_NETRC              netrc for other authenticated substituters
-#   secrets.NIX_SIGNING_KEY        signs paths before NIX_PUSH_TO copies
+# Optional cache configuration comes from repository secrets, not variables or
+# `with:` inputs: GitHub prints inputs and variable values in the run log
+# before any mask applies, but masks secrets everywhere.
+#   secrets.NIX_SUBSTITUTERS        extra substituters (space-separated)
+#   secrets.NIX_TRUSTED_PUBLIC_KEYS their public keys (space-separated)
+#   secrets.ATTIC_ENDPOINT          Attic server, e.g. https://attic.example.com
+#   secrets.ATTIC_CACHE             Attic cache name
+#   secrets.ATTIC_SUBSTITUTER       optional; resolved from the server when unset
+#   secrets.ATTIC_PUBLIC_KEY        optional; resolved from the server when unset
+#   secrets.ATTIC_TOKEN             Attic token (pull + push)
+#   secrets.NIX_PUSH_TO             generic `nix copy --to` store URI
+#   secrets.NIX_NETRC               netrc for other authenticated substituters
+#   secrets.NIX_SIGNING_KEY         signs paths before NIX_PUSH_TO copies
+#   vars.ATTIC_PUSH_ENABLED         set to "false" to substitute without pushing
 
 name: "Nix Remote Builder"
 # Only the random session ID; nix-remote leaves `target` empty unless
@@ -90,14 +92,7 @@ jobs:
       timeout_startup: ${{ inputs.timeout_startup != '' && format('{0}', inputs.timeout_startup) || '300' }}
       timeout_idle: ${{ inputs.timeout_idle != '' && format('{0}', inputs.timeout_idle) || '300' }}
       timeout_linger: ${{ inputs.timeout_linger != '' && format('{0}', inputs.timeout_linger) || '0' }}
-      substituters: ${{ vars.NIX_SUBSTITUTERS }}
-      trusted_public_keys: ${{ vars.NIX_TRUSTED_PUBLIC_KEYS }}
-      attic_server: ${{ vars.ATTIC_ENDPOINT }}
-      attic_cache: ${{ vars.ATTIC_CACHE }}
-      attic_substituter: ${{ vars.ATTIC_SUBSTITUTER }}
-      attic_public_key: ${{ vars.ATTIC_PUBLIC_KEY }}
       attic_push: ${{ vars.ATTIC_PUSH_ENABLED != 'false' && 'true' || 'false' }}
-      push_to: ${{ vars.NIX_PUSH_TO }}
       magic_nix_cache: "false"
       purge_runs: "true"
     secrets: inherit

@@ -152,6 +152,30 @@ on:
       NIX_NETRC:
         description: "netrc contents for authenticated substituters"
         required: false
+      # Cache settings as secrets keep them out of the run's "Inputs" log
+      # block in a public repository (GitHub masks secrets everywhere).
+      # Each is used when the matching `with:` input is empty.
+      NIX_SUBSTITUTERS:
+        description: "Extra substituter URLs (space-separated); alternative to the `substituters` input"
+        required: false
+      NIX_TRUSTED_PUBLIC_KEYS:
+        description: "Extra trusted public keys (space-separated); alternative to `trusted_public_keys`"
+        required: false
+      ATTIC_ENDPOINT:
+        description: "Attic server endpoint; alternative to `attic_server`"
+        required: false
+      ATTIC_CACHE:
+        description: "Attic cache name; alternative to `attic_cache`"
+        required: false
+      ATTIC_SUBSTITUTER:
+        description: "Attic substituter URL; alternative to `attic_substituter`"
+        required: false
+      ATTIC_PUBLIC_KEY:
+        description: "Attic cache public key; alternative to `attic_public_key`"
+        required: false
+      NIX_PUSH_TO:
+        description: "Store URI for `nix copy --to`; alternative to `push_to`"
+        required: false
       NIX_SIGNING_KEY:
         description: "Nix secret signing key applied before `push_to` copies"
         required: false
@@ -203,11 +227,11 @@ jobs:
         shell: bash
         env:
           VALUES: >-
-            ${{ inputs.substituters }} ${{ inputs.trusted_public_keys }}
-            ${{ inputs.attic_server }} ${{ inputs.attic_substituter }}
-            ${{ inputs.attic_public_key }} ${{ inputs.push_to }}
-          ATTIC_SERVER: ${{ inputs.attic_server }}
-          ATTIC_CACHE: ${{ inputs.attic_cache }}
+            ${{ inputs.substituters || secrets.NIX_SUBSTITUTERS }} ${{ inputs.trusted_public_keys || secrets.NIX_TRUSTED_PUBLIC_KEYS }}
+            ${{ inputs.attic_server || secrets.ATTIC_ENDPOINT }} ${{ inputs.attic_substituter || secrets.ATTIC_SUBSTITUTER }}
+            ${{ inputs.attic_public_key || secrets.ATTIC_PUBLIC_KEY }} ${{ inputs.push_to || secrets.NIX_PUSH_TO }}
+          ATTIC_SERVER: ${{ inputs.attic_server || secrets.ATTIC_ENDPOINT }}
+          ATTIC_CACHE: ${{ inputs.attic_cache || secrets.ATTIC_CACHE }}
         run: |
           mask() { [ -n "$1" ] && echo "::add-mask::$1"; return 0; }
           for v in $VALUES; do
@@ -224,13 +248,13 @@ jobs:
         id: nix-conf
         shell: bash
         env:
-          SUBSTITUTERS: ${{ inputs.substituters }}
-          TRUSTED_PUBLIC_KEYS: ${{ inputs.trusted_public_keys }}
+          SUBSTITUTERS: ${{ inputs.substituters || secrets.NIX_SUBSTITUTERS }}
+          TRUSTED_PUBLIC_KEYS: ${{ inputs.trusted_public_keys || secrets.NIX_TRUSTED_PUBLIC_KEYS }}
           EXTRA_NIX_CONF: ${{ inputs.extra_nix_conf }}
-          ATTIC_SERVER: ${{ inputs.attic_server }}
-          ATTIC_CACHE: ${{ inputs.attic_cache }}
-          ATTIC_SUBSTITUTER: ${{ inputs.attic_substituter }}
-          ATTIC_PUBLIC_KEY: ${{ inputs.attic_public_key }}
+          ATTIC_SERVER: ${{ inputs.attic_server || secrets.ATTIC_ENDPOINT }}
+          ATTIC_CACHE: ${{ inputs.attic_cache || secrets.ATTIC_CACHE }}
+          ATTIC_SUBSTITUTER: ${{ inputs.attic_substituter || secrets.ATTIC_SUBSTITUTER }}
+          ATTIC_PUBLIC_KEY: ${{ inputs.attic_public_key || secrets.ATTIC_PUBLIC_KEY }}
           ATTIC_SUBSTITUTE: ${{ inputs.attic_substitute }}
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
           NIX_NETRC: ${{ secrets.NIX_NETRC }}
@@ -396,20 +420,24 @@ jobs:
           echo "Builder session ended cleanly."
 
       - name: "Push to binary cache"
-        if: ${{ always() && ((inputs.attic_push != 'false' && inputs.attic_server != '' && inputs.attic_cache != '') || inputs.push_to != '') }}
+        if: ${{ always() }}
         shell: bash
         env:
           PUSH_PATHS: ${{ inputs.push_paths }}
-          ATTIC_SERVER: ${{ inputs.attic_push != 'false' && inputs.attic_server || '' }}
-          ATTIC_CACHE: ${{ inputs.attic_cache }}
+          ATTIC_SERVER: ${{ inputs.attic_push != 'false' && (inputs.attic_server || secrets.ATTIC_ENDPOINT) || '' }}
+          ATTIC_CACHE: ${{ inputs.attic_cache || secrets.ATTIC_CACHE }}
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
-          PUSH_TO: ${{ inputs.push_to }}
+          PUSH_TO: ${{ inputs.push_to || secrets.NIX_PUSH_TO }}
           NIX_SIGNING_KEY: ${{ secrets.NIX_SIGNING_KEY }}
           VERBOSE_LOGS: ${{ inputs.verbose_logs }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
+          if { [ -z "$ATTIC_SERVER" ] || [ -z "$ATTIC_CACHE" ]; } && [ -z "$PUSH_TO" ]; then
+            echo "No cache push configured."
+            exit 0
+          fi
           work="$RUNNER_TEMP/nix-remote"
           before="$work/store-before"
           paths="$work/push-paths"
