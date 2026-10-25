@@ -492,7 +492,13 @@ def session-run [repo: string, session_id: string]: nothing -> any {
 def reap-run [settings: record, session_id: string] {
     let script = '
         repo="$1" session="$2" dir="$3" delete="$4"
-        for _ in $(seq 120); do
+        for n in $(seq 120); do
+            # A builder that joined after nix-remote moved on never gets the
+            # completion signal, so cancel a run still going after ~10 minutes.
+            if [ "$n" -eq 40 ]; then
+                open=$(gh run list --repo "$repo" --limit 50 --json databaseId,status,displayTitle                     --jq ".[] | select(.status != \"completed\") | select(.displayTitle | contains(\"[$session]\")) | .databaseId"                     2>/dev/null | head -n 1)
+                if [ -n "$open" ]; then gh run cancel "$open" --repo "$repo" >/dev/null 2>&1; fi
+            fi
             id=$(gh run list --repo "$repo" --limit 50 --json databaseId,status,displayTitle \
                 --jq ".[] | select(.status == \"completed\") | select(.displayTitle | contains(\"[$session]\")) | .databaseId" \
                 2>/dev/null | head -n 1)
@@ -601,6 +607,12 @@ def start-session [
     while ($ready_hosts | length) < ($nodes | length) {
         let elapsed = ((date now) - $start_time) // 1sec
         if $timeouts.startup > 0 and $elapsed >= $timeouts.startup {
+            # GitHub can queue some jobs (macOS runners especially). Carry on
+            # with the builders that are up rather than discarding them.
+            if ($ready_hosts | is-not-empty) {
+                print --stderr $"\nWarning: only ($ready_hosts | length) of ($nodes | length) builders came online within ($timeouts.startup)s; continuing without the rest."
+                break
+            }
             print --stderr $"\nError: Timed out waiting for runners after ($timeouts.startup)s."
             do $fail
         }
@@ -642,7 +654,8 @@ def start-session [
         }
     }
 
-    print $"\nAll ($nodes | length) builders online."
+    let nodes = $nodes | where {|node| $node.host in $ready_hosts }
+    print $"\n($nodes | length) builders online."
 
     let specs = ($nodes | each {|node|
         let host_key = host-key-b64 ($known_hosts_dir | path join $node.host)
