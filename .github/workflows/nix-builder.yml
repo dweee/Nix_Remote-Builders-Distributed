@@ -244,11 +244,28 @@ jobs:
       - name: "Checkout repository"
         uses: actions/checkout@v7
 
+      - name: "Checkout gccarch probe"
+        uses: actions/checkout@v7
+        with:
+          repository: dweee/Nix_Remote-Builders-Distributed
+          ref: ${{ github.job_workflow_sha }}
+          path: .nix-remote-src
+          sparse-checkout: .github/actions/probe-gccarch
+
       - name: "Probe CPU architectures"
         id: gccarch
-        # Relative to this workflow file, so the caller repo (nix-builders)
-        # does not need a copy of the action.
-        uses: ./.github/actions/probe-gccarch
+        shell: bash
+        run: |
+          set -euo pipefail
+          features=$(bash .nix-remote-src/.github/actions/probe-gccarch/probe-gccarch.sh | head -n 1)
+          mkdir -p "$HOME/.config/nix-remote"
+          printf '%s\n' "$features" > "$HOME/.config/nix-remote/gccarch"
+          echo "features=$features" >> "$GITHUB_OUTPUT"
+          if [ -n "$features" ]; then
+            echo "gccarch features: $features"
+          else
+            echo "No gccarch features beyond the stock baseline."
+          fi
 
       - name: "Resolve substituters"
         id: nix-conf
