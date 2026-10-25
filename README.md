@@ -25,6 +25,7 @@ nix run github:Malix-Labs/Nix_Remote-Builders-Distributed -- build .#myHeavyPack
 - **Drop-in Nix Replacement**: Seamlessly prefix standard commands (`build`, `flake check`) or use `--fast` for pipelined builds with `nix-fast-build`.
 - **Binary Cache Push**: Builders push the outputs they built to [Attic](https://github.com/zhaofengli/attic) or any `nix copy` store before they shut down.
 - **Builder-Side Substitution**: Builders fetch dependencies from cache.nixos.org, your own caches and private Attic caches instead of receiving them from your machine.
+- **Any Build Command**: `nix-remote exec -- nh os switch` wraps nh, nixos-rebuild, darwin-rebuild, home-manager or anything else that calls Nix. `nix-remote up` registers builders with the nix-daemon so that every build on the machine uses them.
 - **Callable from Forgejo/Gitea**: A composite action runs the client inside a Forgejo Actions job, so an on-prem forge can build private flakes on these builders.
 
 ## Architecture
@@ -296,6 +297,75 @@ nix-remote --timeout-linger 600 -- build -L .#part1
 nix-remote --repo <owner>/<repo> build .#target
 ```
 
+## System Rebuilds & Machine-Wide Sessions
+
+### `nix-remote exec`: wrap any command
+
+```sh
+nix-remote exec -- nh os switch .
+nix-remote exec -- nh os switch . -H terra --target-host terra
+nix-remote exec -- nixos-rebuild switch --flake .#lapwolf --sudo
+nix-remote exec -- darwin-rebuild switch --flake .#rotna
+nix-remote exec -- nh home switch .
+nix-remote exec --x86 2 -- deploy .#icicle          # anything else: give counts or --for
+nix-remote exec --for .#packages.x86_64-linux.big -- ./my-script
+```
+
+For `nh os|home|darwin`, `nixos-rebuild`, `darwin-rebuild` and `home-manager`,
+`exec` works out which output the command builds. It reads `--flake`, `-H`,
+`-c`, `NH_FLAKE`, `NH_OS_FLAKE` and similar, and falls back to this machine's
+hostname. It then dry-runs that output: if everything is cached, the command
+runs immediately without builders. Otherwise builders are sized from the
+systems of the derivations that need building (`i686-linux` goes to x86
+builders). Commands it does not recognise get one builder of this machine's
+system unless `--for` or explicit counts are given. When the command exits, the
+builders shut down and its exit code is returned.
+
+The builders reach the command through `NIX_CONFIG` (`builders`,
+`builders-use-substitutes`, `max-jobs = --local-jobs`), which the nix-daemon
+honours for trusted users. With the system module below, `exec` also registers
+the session with the daemon, so builds started by root or other users use the
+builders too (for example `sudo nixos-rebuild`).
+
+### `nix-remote up` / `down` / `status`: machine-wide sessions
+
+```sh
+nix-remote up --x86 2 --arm 1          # or --for <installable> to size it
+nh os switch .                         # plain commands now use the builders
+nixos-rebuild boot --flake .#terra --target-host terra
+nix-remote status                      # list sessions, drop unreachable builders
+nix-remote down                        # stop all sessions (or: down <session>)
+```
+
+`up` writes the builders to a machines file that the nix-daemon's `builders`
+setting includes. Nix reads it at the start of each build, so nothing needs
+restarting. Builders shut down after `--timeout-idle` (default 900 s) without
+builds, or with `down`.
+
+### NixOS / nix-darwin module
+
+```nix
+imports = [ inputs.nix-remote-builders.nixosModules.default ];   # or darwinModules.default
+services.nix-remote = {
+  enable = true;
+  users = [ "alice" ];                 # NixOS: may start/stop sessions
+  settings.repo = "<owner>/<runner-repo>";
+};
+```
+
+The module installs `nix-remote` and sets
+`nix.settings.builders = "@/etc/nix/machines;@<machinesFile>"`, so
+`nix.buildMachines` keep working next to session builders. It also enables
+`builders-use-substitutes` and creates the shared state directory:
+`/run/nix-remote` on NixOS with group `nix-remote`, or `/var/lib/nix-remote`
+on macOS with group `admin`. `settings` becomes `/etc/nix-remote/config.toml`,
+which each user's `~/.config/nix-remote/config.toml` overrides.
+
+The SSH connections to builders are made by the nix-daemon, usually as root.
+Builder host keys are pinned in the machines file. Root must still resolve
+`nix-builder-*` through MagicDNS, and the host must be allowed in the
+Tailscale SSH policy (`src` must cover the host's tag or owner).
+
 ## CLI Options (`nix-remote`)
 
 ```text
@@ -326,6 +396,12 @@ Flags:
 
 Parameters:
   ...rest <string>: Nix command and arguments (e.g. build .#default)
+
+Subcommands:
+  nix-remote exec - Run any command (nh, nixos-rebuild, darwin-rebuild, home-manager, ...) with remote builders.
+  nix-remote up - Start builders and register them with the nix-daemon until `nix-remote down`.
+  nix-remote down - Stop builder sessions and remove them from the machines file.
+  nix-remote status - Show builder sessions, dropping builders that are no longer reachable.
 ```
 
 ## Binary Caches & Substitution

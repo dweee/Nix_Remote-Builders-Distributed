@@ -27,6 +27,24 @@
       systems = import inputs.systems;
 
       flake = {
+        nixosModules =
+          let
+            nixosModule = import ./nix/modules/nixos.nix;
+          in
+          {
+            nix-remote = nixosModule;
+            default = nixosModule;
+          };
+
+        darwinModules =
+          let
+            darwinModule = import ./nix/modules/darwin.nix;
+          in
+          {
+            nix-remote = darwinModule;
+            default = darwinModule;
+          };
+
         homeManagerModules =
           let
             homeManagerModule = import ./nix/modules/home-manager.nix;
