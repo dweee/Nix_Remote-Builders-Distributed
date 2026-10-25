@@ -9,6 +9,20 @@ def check-cmd [cmd: closure, msg: string] {
     }
 }
 
+# Base64-encode the host key recorded in a known_hosts file, for a Nix machine spec.
+def host-key-b64 [file: path]: nothing -> string {
+    let content = try { open --raw $file } catch { "" }
+    let entries = ($content
+        | lines
+        | each {|l| $l | str trim | split row " " }
+        | where ($it | length) >= 3)
+    if ($entries | is-empty) {
+        return "-"
+    }
+    let entry = $entries | first
+    $"($entry.1?) ($entry.2?)" | encode base64
+}
+
 # Distribute Nix builds across on-demand cloud runners over Tailscale SSH.
 def main [
   --provider: string = "gha" # Cloud provider backend
@@ -27,6 +41,7 @@ def main [
   --environment: string # GitHub Actions environment name containing secrets
   --tailscale-tags: string # Tailscale ACL tags to apply to runner nodes
   --keep-alive # Keep runners alive after command finishes
+  --no-builder-substitutes # Copy every input from this machine instead of letting builders use their substituters
   ...rest: string # Nix command and arguments (e.g. build .#default)
 ] {
     if $fast and $built_in {
@@ -253,7 +268,12 @@ def main [
         include: ($nodes | select id os)
     } | to json --raw)
 
+    # Host keys learned while probing, pinned into the builder spec so the
+    # nix-daemon (often root, with its own known_hosts) trusts the runners.
+    let known_hosts_dir = (mktemp --directory --tmpdir nix-remote.XXXXXX)
+
     let do_cleanup = {|hosts: list<any>, keep: bool|
+        try { rm --recursive --force $known_hosts_dir }
         if not $keep {
             print "\nShutting down remote builders..."
             $hosts | par-each {|node|
@@ -337,7 +357,8 @@ def main [
         let newly_ready = ($nodes
       | where not ($it.host in $ready_hosts)
       | par-each {|node|
-          let probe = ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -o BatchMode=yes $"runner@($node.host)" "true" | complete
+          let known_hosts = $known_hosts_dir | path join $node.host
+          let probe = ssh -q -o StrictHostKeyChecking=accept-new -o $"UserKnownHostsFile=($known_hosts)" -o HashKnownHosts=no -o ConnectTimeout=2 -o BatchMode=yes $"runner@($node.host)" "true" | complete
           if ($probe.exit_code == 0) {
             $node
           } else {
@@ -360,9 +381,11 @@ def main [
     print $"\nAll ($nodes | length) builders online."
 
     let builders_list = ($nodes | each {|node|
-    $"ssh-ng://runner@($node.host)?remote-program=/nix/var/nix/profiles/default/bin/nix-daemon ($node.system) - ($node.cores) 1 kvm,benchmark,big-parallel - -"
+    let host_key = host-key-b64 ($known_hosts_dir | path join $node.host)
+    $"ssh-ng://runner@($node.host)?remote-program=/nix/var/nix/profiles/default/bin/nix-daemon ($node.system) - ($node.cores) 1 kvm,benchmark,big-parallel - ($host_key)"
   })
     let builders_arg = $builders_list | str join ";"
+    let substitutes = if $no_builder_substitutes { "false" } else { "true" }
 
     let use_fast = if $fast {
         true
@@ -392,7 +415,7 @@ def main [
         print $"\nRunning with nix-fast-build: flake target '($flake_target)'\n"
 
         try {
-            nix-fast-build --flake $flake_target --option builders $builders_arg --option max-jobs ($local_jobs | into string) --no-nom
+            nix-fast-build --flake $flake_target --option builders $builders_arg --option builders-use-substitutes $substitutes --option max-jobs ($local_jobs | into string) --no-nom
             do $do_cleanup $nodes $keep_alive
         } catch {|err|
             do $do_cleanup $nodes $keep_alive
@@ -402,7 +425,7 @@ def main [
         print $"\nRunning: nix ($nix_args | str join ' ')\n"
 
         try {
-            ^nix ...$nix_args --builders $builders_arg --max-jobs $local_jobs
+            ^nix ...$nix_args --builders $builders_arg --option builders-use-substitutes $substitutes --max-jobs $local_jobs
             do $do_cleanup $nodes $keep_alive
         } catch {|err|
             do $do_cleanup $nodes $keep_alive
