@@ -376,13 +376,13 @@ jobs:
 
             # Check active SSH sessions (ss on Linux, lsof on macOS)
             if command -v ss >/dev/null 2>&1; then
-              ACTIVE_SSH=$(ss -H -t state established '( sport = :22 )' 2>/dev/null | wc -l)
+              ACTIVE_SSH=$(ss -H -t state established '( sport = :22 )' 2>/dev/null | wc -l || true)
             elif command -v lsof >/dev/null 2>&1; then
-              ACTIVE_SSH=$(lsof -iTCP:22 -sTCP:ESTABLISHED 2>/dev/null | sed 1d | wc -l)
+              ACTIVE_SSH=$(lsof -iTCP:22 -sTCP:ESTABLISHED 2>/dev/null | sed 1d | wc -l || true)
             else
               ACTIVE_SSH=0
             fi
-            ACTIVE_NIX=$(pgrep -f "nix-daemon" 2>/dev/null | wc -l)
+            ACTIVE_NIX=$(pgrep -f "nix-daemon" 2>/dev/null | wc -l || true)
 
             if [ "$ACTIVE_SSH" -gt 0 ] || [ "$ACTIVE_NIX" -gt 0 ]; then
               if [ "$CONNECTED_ONCE" = false ]; then
