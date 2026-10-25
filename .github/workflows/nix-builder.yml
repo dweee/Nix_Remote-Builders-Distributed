@@ -3,7 +3,7 @@ run-name: "${{ inputs.target != '' && format('Nix Remote: {0} [{1}]', inputs.tar
 
 on:
   workflow_dispatch:
-    inputs: &inputs
+    inputs:
       session_id:
         description: "Unique session identifier"
         required: true
@@ -38,7 +38,94 @@ on:
         type: string
 
   workflow_call:
-    inputs: *inputs
+    inputs:
+      session_id:
+        description: "Unique session identifier"
+        required: true
+        type: string
+      target:
+        description: "Target or Nix command being executed"
+        type: string
+        default: ""
+      matrix:
+        description: "JSON matrix specification ({ include: [...] })"
+        required: true
+        type: string
+      environment:
+        description: "GitHub Actions environment name to source secrets from (optional)"
+        type: string
+        default: ""
+      tailscale_tags:
+        description: "Tailscale ACL tags to apply to runner nodes"
+        default: "tag:nix-builder"
+        type: string
+      timeout_startup:
+        description: "Wait for first connection in seconds"
+        default: "300"
+        type: string
+      timeout_idle:
+        description: "Idle timeout between disconnections in seconds"
+        default: "300"
+        type: string
+      timeout_linger:
+        description: "Grace period after completion signal in seconds"
+        default: "0"
+        type: string
+
+      # Substitution: lets the builders fetch dependencies from caches instead
+      # of rebuilding them or receiving them from the client.
+      substituters:
+        description: "Space-separated extra substituter URLs for the builders"
+        type: string
+        default: ""
+      trusted_public_keys:
+        description: "Space-separated extra trusted public keys for the builders"
+        type: string
+        default: ""
+      extra_nix_conf:
+        description: "Extra lines appended to the builders' nix.conf"
+        type: string
+        default: ""
+      magic_nix_cache:
+        description: "Use the GitHub Actions cache through Magic Nix Cache"
+        type: string
+        default: "true"
+
+      # Attic: used as a substituter and as the push target.
+      attic_server:
+        description: "Attic server endpoint (e.g. https://attic.example.com)"
+        type: string
+        default: ""
+      attic_cache:
+        description: "Attic cache name"
+        type: string
+        default: ""
+      attic_substituter:
+        description: "Attic substituter URL (resolved from the server when empty)"
+        type: string
+        default: ""
+      attic_public_key:
+        description: "Attic cache public key (resolved from the server when empty)"
+        type: string
+        default: ""
+      attic_substitute:
+        description: "Add the Attic cache to the builders' substituters"
+        type: string
+        default: "true"
+      attic_push:
+        description: "Push outputs built on the builders to the Attic cache"
+        type: string
+        default: "true"
+
+      # Generic binary cache push through `nix copy`.
+      push_to:
+        description: "Nix store URI to copy built outputs to (e.g. s3://bucket?region=..., ssh-ng://host)"
+        type: string
+        default: ""
+      push_paths:
+        description: "Which paths to push: 'built' (outputs built on the builder) or 'all' (every path added during the session)"
+        type: string
+        default: "built"
     secrets:
       TS_OAUTH_CLIENT_ID:
         description: "Tailscale OAuth Client ID"
@@ -48,6 +135,21 @@ on:
         required: false
       TS_AUDIENCE:
         description: "Tailscale OIDC Audience (for Workload Identity Federation)"
+        required: false
+      ATTIC_TOKEN:
+        description: "Attic token (pull for substitution, push for uploads)"
+        required: false
+      NIX_NETRC:
+        description: "netrc contents for authenticated substituters"
+        required: false
+      NIX_SIGNING_KEY:
+        description: "Nix secret signing key applied before `push_to` copies"
+        required: false
+      AWS_ACCESS_KEY_ID:
+        description: "S3 access key for an s3:// `push_to` store"
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        description: "S3 secret key for an s3:// `push_to` store"
         required: false
 
 jobs:
@@ -65,8 +167,96 @@ jobs:
       - name: "Checkout repository"
         uses: actions/checkout@v7
 
-      - name: "Setup Nix and Magic Cache"
-        uses: Malix-Labs/dotfiles/.github/actions/nix-setup@main
+      - name: "Resolve substituters"
+        id: nix-conf
+        shell: bash
+        env:
+          SUBSTITUTERS: ${{ inputs.substituters }}
+          TRUSTED_PUBLIC_KEYS: ${{ inputs.trusted_public_keys }}
+          EXTRA_NIX_CONF: ${{ inputs.extra_nix_conf }}
+          ATTIC_SERVER: ${{ inputs.attic_server }}
+          ATTIC_CACHE: ${{ inputs.attic_cache }}
+          ATTIC_SUBSTITUTER: ${{ inputs.attic_substituter }}
+          ATTIC_PUBLIC_KEY: ${{ inputs.attic_public_key }}
+          ATTIC_SUBSTITUTE: ${{ inputs.attic_substitute }}
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          NIX_NETRC: ${{ secrets.NIX_NETRC }}
+        run: |
+          set -euo pipefail
+
+          substituters="$SUBSTITUTERS"
+          keys="$TRUSTED_PUBLIC_KEYS"
+          netrc_dir="$RUNNER_TEMP/nix-remote"
+          netrc="$netrc_dir/netrc"
+          mkdir -p "$netrc_dir"
+          chmod 700 "$netrc_dir"
+          ( umask 077 && : > "$netrc" )
+
+          if [ -n "$NIX_NETRC" ]; then
+            printf '%s\n' "$NIX_NETRC" >> "$netrc"
+          fi
+
+          if [ "$ATTIC_SUBSTITUTE" != "false" ] && [ -n "$ATTIC_SERVER" ] && [ -n "$ATTIC_CACHE" ]; then
+            server="${ATTIC_SERVER%/}"
+            sub="$ATTIC_SUBSTITUTER"
+            key="$ATTIC_PUBLIC_KEY"
+            if [ -z "$sub" ] || [ -z "$key" ]; then
+              auth=()
+              if [ -n "$ATTIC_TOKEN" ]; then
+                auth=(-H "Authorization: Bearer $ATTIC_TOKEN")
+              fi
+              if ! cfg=$(curl -fsSL --retry 3 "${auth[@]}" "$server/_api/v1/cache-config/$ATTIC_CACHE"); then
+                echo "::error::Could not read Attic cache '$ATTIC_CACHE' from $server. Provide ATTIC_TOKEN, or set attic_substituter and attic_public_key."
+                exit 1
+              fi
+              sub="${sub:-$(jq -r '.substituter_endpoint // empty' <<<"$cfg")}"
+              key="${key:-$(jq -r '.public_key // empty' <<<"$cfg")}"
+            fi
+            if [ -z "$sub" ] || [ -z "$key" ]; then
+              echo "::error::Could not resolve the Attic substituter or public key for cache '$ATTIC_CACHE'."
+              exit 1
+            fi
+            substituters="$substituters $sub"
+            keys="$keys $key"
+
+            if [ -n "$ATTIC_TOKEN" ]; then
+              host=$(sed -E 's#^[a-z]+://([^/:]+).*#\1#' <<<"$sub")
+              printf 'machine %s\npassword %s\n' "$host" "$ATTIC_TOKEN" >> "$netrc"
+            fi
+          fi
+
+          delim="EOF_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            echo "conf<<$delim"
+            echo "netrc-file = $netrc"
+            # trim leading/trailing whitespace from the space-separated lists
+            substituters=$(xargs <<<"$substituters")
+            keys=$(xargs <<<"$keys")
+            if [ -n "$substituters" ]; then echo "extra-substituters = $substituters"; fi
+            if [ -n "$keys" ]; then echo "extra-trusted-public-keys = $keys"; fi
+            if [ -n "$EXTRA_NIX_CONF" ]; then printf '%s\n' "$EXTRA_NIX_CONF"; fi
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+          count=$(wc -w <<<"$substituters")
+          echo "Configured ${count} extra substituter(s)."
+
+      - name: "Setup Nix"
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          extra-conf: ${{ steps.nix-conf.outputs.conf }}
+
+      - name: "Setup Magic Nix Cache"
+        if: ${{ inputs.magic_nix_cache != 'false' }}
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: false
+
+      - name: "Snapshot store"
+        shell: bash
+        run: |
+          nix path-info --all > "$RUNNER_TEMP/nix-remote/store-before"
+          echo "Store holds $(wc -l < "$RUNNER_TEMP/nix-remote/store-before") paths before the session."
 
       - name: "Connect Tailscale with SSH"
         uses: tailscale/github-action@v4
@@ -149,3 +339,95 @@ jobs:
           done
 
           echo "Builder session ended cleanly."
+
+      - name: "Push to binary cache"
+        if: ${{ always() && ((inputs.attic_push != 'false' && inputs.attic_server != '' && inputs.attic_cache != '') || inputs.push_to != '') }}
+        shell: bash
+        env:
+          PUSH_PATHS: ${{ inputs.push_paths }}
+          ATTIC_SERVER: ${{ inputs.attic_push != 'false' && inputs.attic_server || '' }}
+          ATTIC_CACHE: ${{ inputs.attic_cache }}
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          PUSH_TO: ${{ inputs.push_to }}
+          NIX_SIGNING_KEY: ${{ secrets.NIX_SIGNING_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/nix-remote"
+          before="$work/store-before"
+          paths="$work/push-paths"
+          log="$work/push.log"
+
+          if [ ! -f "$before" ]; then
+            echo "No store snapshot was taken; nothing to push."
+            exit 0
+          fi
+
+          # Paths that appeared during the session. 'built' keeps build outputs:
+          # ones this builder produced ("ultimate"), or unsigned paths with a
+          # deriver (built elsewhere, not substituted). Plain sources are skipped.
+          nix path-info --all | sort > "$work/store-after"
+          sort "$before" | comm -13 - "$work/store-after" | grep -v '\.drv$' > "$work/new-paths" || true
+
+          case "$PUSH_PATHS" in
+            all)
+              cp "$work/new-paths" "$paths"
+              ;;
+            built)
+              if [ -s "$work/new-paths" ]; then
+                json_format=()
+                if nix path-info --help 2>/dev/null | grep -q -- '--json-format'; then
+                  json_format=(--json-format 1)
+                fi
+                xargs nix path-info --json "${json_format[@]}" < "$work/new-paths" \
+                  | jq -r 'def built: .ultimate == true
+                             or (((.signatures // []) | length) == 0 and .deriver != null);
+                           if type == "array"
+                           then .[] | select(built) | .path
+                           else to_entries[] | select(.value | built) | .key end' \
+                  > "$paths"
+              else
+                : > "$paths"
+              fi
+              ;;
+            *)
+              echo "::error::push_paths must be 'built' or 'all', got '$PUSH_PATHS'."
+              exit 1
+              ;;
+          esac
+
+          count=$(wc -l < "$paths" | tr -d ' ')
+          echo "Selected ${count} path(s) to push (mode: $PUSH_PATHS)."
+          if [ "$count" -eq 0 ]; then
+            exit 0
+          fi
+
+          # Per-path output stays in a log file and is only shown on failure.
+          fail() {
+            echo "::error::$1"
+            tail -n 40 "$log" || true
+            exit 1
+          }
+
+          if [ -n "$ATTIC_SERVER" ]; then
+            attic_bin=$(nix build --no-link --print-out-paths nixpkgs#attic-client)/bin/attic
+            "$attic_bin" login nix-remote "${ATTIC_SERVER%/}" "$ATTIC_TOKEN" > "$log" 2>&1 \
+              || fail "attic login failed"
+            xargs "$attic_bin" push "nix-remote:$ATTIC_CACHE" < "$paths" >> "$log" 2>&1 \
+              || fail "attic push failed"
+            echo "Pushed ${count} path(s) and their closures to Attic cache '$ATTIC_CACHE'."
+          fi
+
+          if [ -n "$PUSH_TO" ]; then
+            if [ -n "$NIX_SIGNING_KEY" ]; then
+              key_file="$work/signing-key"
+              ( umask 077 && printf '%s\n' "$NIX_SIGNING_KEY" > "$key_file" )
+              xargs nix store sign --recursive --key-file "$key_file" < "$paths" >> "$log" 2>&1 \
+                || fail "nix store sign failed"
+              rm -f "$key_file"
+            fi
+            xargs nix copy --to "$PUSH_TO" < "$paths" >> "$log" 2>&1 \
+              || fail "nix copy failed"
+            echo "Copied ${count} path(s) and their closures to the push_to store."
+          fi

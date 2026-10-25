@@ -2,7 +2,22 @@
 # .github/workflows/nix-builder.yml
 #
 # This workflow sets up on-demand distributed Nix remote builders using
-# the reusable workflow from Malix-Labs/Nix_Remote-Builders-Distributed.
+# the reusable workflow from dweee/Nix_Remote-Builders-Distributed.
+#
+# Keep this repository private: builders receive your derivations' sources.
+#
+# Optional cache configuration comes from repository variables and secrets:
+#   vars.NIX_SUBSTITUTERS          extra substituters (space-separated)
+#   vars.NIX_TRUSTED_PUBLIC_KEYS   their public keys (space-separated)
+#   vars.ATTIC_ENDPOINT            Attic server, e.g. https://attic.example.com
+#   vars.ATTIC_CACHE               Attic cache name
+#   vars.ATTIC_SUBSTITUTER         optional; resolved from the server when unset
+#   vars.ATTIC_PUBLIC_KEY          optional; resolved from the server when unset
+#   vars.ATTIC_PUSH_ENABLED        set to "false" to substitute without pushing
+#   vars.NIX_PUSH_TO               generic `nix copy --to` store URI
+#   secrets.ATTIC_TOKEN            Attic token (pull + push)
+#   secrets.NIX_NETRC              netrc for other authenticated substituters
+#   secrets.NIX_SIGNING_KEY        signs paths before NIX_PUSH_TO copies
 
 name: "Nix Remote Builder"
 run-name: "${{ inputs.target != '' && format('Nix Remote: {0} [{1}]', inputs.target, inputs.session_id) || format('Nix Remote: [{0}]', inputs.session_id) }}"
@@ -49,7 +64,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    uses: Malix-Labs/Nix_Remote-Builders-Distributed/.github/workflows/nix-builder.yml@main
+    uses: dweee/Nix_Remote-Builders-Distributed/.github/workflows/nix-builder.yml@main
     with:
       # Optional: specify a GitHub Actions Environment name if your Tailscale
       # secrets (OAuth or OIDC) are stored within an Environment
@@ -63,4 +78,12 @@ jobs:
       timeout_startup: ${{ inputs.timeout_startup != '' && format('{0}', inputs.timeout_startup) || '300' }}
       timeout_idle: ${{ inputs.timeout_idle != '' && format('{0}', inputs.timeout_idle) || '300' }}
       timeout_linger: ${{ inputs.timeout_linger != '' && format('{0}', inputs.timeout_linger) || '0' }}
+      substituters: ${{ vars.NIX_SUBSTITUTERS }}
+      trusted_public_keys: ${{ vars.NIX_TRUSTED_PUBLIC_KEYS }}
+      attic_server: ${{ vars.ATTIC_ENDPOINT }}
+      attic_cache: ${{ vars.ATTIC_CACHE }}
+      attic_substituter: ${{ vars.ATTIC_SUBSTITUTER }}
+      attic_public_key: ${{ vars.ATTIC_PUBLIC_KEY }}
+      attic_push: ${{ vars.ATTIC_PUSH_ENABLED != 'false' && 'true' || 'false' }}
+      push_to: ${{ vars.NIX_PUSH_TO }}
     secrets: inherit
