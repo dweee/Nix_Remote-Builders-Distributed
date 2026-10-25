@@ -1,0 +1,22 @@
+name: Probe gccarch
+description: Record the gccarch-* features this runner can execute.
+outputs:
+  features:
+    description: Space-separated gccarch-* tokens
+    value: ${{ steps.probe.outputs.features }}
+runs:
+  using: composite
+  steps:
+    - id: probe
+      shell: bash
+      run: |
+        set -euo pipefail
+        features=$(bash "$GITHUB_ACTION_PATH/probe-gccarch.sh" | head -n 1)
+        mkdir -p "$HOME/.config/nix-remote"
+        printf '%s\n' "$features" > "$HOME/.config/nix-remote/gccarch"
+        echo "features=$features" >> "$GITHUB_OUTPUT"
+        if [ -n "$features" ]; then
+          echo "gccarch features: $features"
+        else
+          echo "No gccarch features beyond the stock baseline."
+        fi

@@ -539,10 +539,43 @@ def probe-nodes [nodes: list<record>, known_hosts_dir: path]: nothing -> list<re
     | compact
 }
 
+# gccarch-* tokens the builder recorded for itself. Empty when this runner
+# image does not probe (older workflow) or has nothing to add.
+def probed-gccarch [node: record, known_hosts_dir: path]: nothing -> string {
+    let known_hosts = $known_hosts_dir | path join $node.host
+    let probe = (
+        ssh -q
+            -o StrictHostKeyChecking=accept-new
+            -o $"UserKnownHostsFile=($known_hosts)"
+            -o HashKnownHosts=no
+            -o ConnectTimeout=5
+            -o BatchMode=yes
+            $"runner@($node.host)"
+            "cat \"$HOME/.config/nix-remote/gccarch\" 2>/dev/null || true"
+        | complete
+    )
+    if $probe.exit_code != 0 {
+        ""
+    } else {
+        $probe.stdout | str trim | str replace --all "\n" " "
+    }
+}
+
 # Nix machine spec for a builder, pinning the host key the probe learned.
+# Advertised features are the static set plus whatever gccarch-* the runner
+# probed into ~/.config/nix-remote/gccarch. The same tokens are in its
+# nix.conf, so the daemon accepts the jobs this line offers it.
 def node-spec [node: record, known_hosts_dir: path]: nothing -> string {
     let host_key = host-key-b64 ($known_hosts_dir | path join $node.host)
-    $"ssh-ng://runner@($node.host)?remote-program=/nix/var/nix/profiles/default/bin/nix-daemon ($node.system) - ($node.cores) 1 kvm,benchmark,big-parallel - ($host_key)"
+    let extra = probed-gccarch $node $known_hosts_dir
+    let tokens = if $extra == "" { [] } else { $extra | split row " " | where {|t| ($t | str length) > 0 } }
+    let features = if ($tokens | is-empty) {
+        "kvm,benchmark,big-parallel"
+    } else {
+        print $"    ($node.host): ($tokens | str join ', ')"
+        "kvm,benchmark,big-parallel," + ($tokens | str join ",")
+    }
+    $"ssh-ng://runner@($node.host)?remote-program=/nix/var/nix/profiles/default/bin/nix-daemon ($node.system) - ($node.cores) 1 ($features) - ($host_key)"
 }
 
 # Keep probing builders that were still starting when the command began, and

@@ -244,6 +244,12 @@ jobs:
       - name: "Checkout repository"
         uses: actions/checkout@v7
 
+      - name: "Probe CPU architectures"
+        id: gccarch
+        # Same commit as this workflow file. A relative uses: would look in the
+        # caller (dweee/nix-builders), which only has the thin dispatch workflow.
+        uses: dweee/Nix_Remote-Builders-Distributed/.github/actions/probe-gccarch@${{ github.job_workflow_sha }}
+
       - name: "Resolve substituters"
         id: nix-conf
         shell: bash
@@ -251,6 +257,7 @@ jobs:
           SUBSTITUTERS: ${{ inputs.substituters || secrets.NIX_SUBSTITUTERS }}
           TRUSTED_PUBLIC_KEYS: ${{ inputs.trusted_public_keys || secrets.NIX_TRUSTED_PUBLIC_KEYS }}
           EXTRA_NIX_CONF: ${{ inputs.extra_nix_conf }}
+          GCCARCH: ${{ steps.gccarch.outputs.features }}
           ATTIC_SERVER: ${{ inputs.attic_server || secrets.ATTIC_ENDPOINT }}
           ATTIC_CACHE: ${{ inputs.attic_cache || secrets.ATTIC_CACHE }}
           ATTIC_SUBSTITUTER: ${{ inputs.attic_substituter || secrets.ATTIC_SUBSTITUTER }}
@@ -314,6 +321,7 @@ jobs:
             if [ -n "$substituters" ]; then echo "extra-substituters = $substituters"; fi
             if [ -n "$keys" ]; then echo "extra-trusted-public-keys = $keys"; fi
             if [ -n "$EXTRA_NIX_CONF" ]; then printf '%s\n' "$EXTRA_NIX_CONF"; fi
+            if [ -n "$GCCARCH" ]; then echo "extra-system-features = $GCCARCH"; fi
             echo "$delim"
           } >> "$GITHUB_OUTPUT"
 
