@@ -402,6 +402,7 @@ Subcommands:
   nix-remote up - Start builders and register them with the nix-daemon until `nix-remote down`.
   nix-remote down - Stop builder sessions and remove them from the machines file.
   nix-remote status - Show builder sessions, dropping builders that are no longer reachable.
+  nix-remote logs - Show a session's builder log: the saved copy, or the run on GitHub if it still exists.
 ```
 
 ## Binary Caches & Substitution
@@ -485,6 +486,23 @@ though. The template and client keep metadata out of them:
 | Store paths | Pushes log counts only. Per-path output needs `verbose_logs: "true"`. |
 | Build outputs in the Actions cache | `magic_nix_cache: "false"`: workflows from fork pull requests can read a public repository's caches. |
 | Run history and logs | `delete_runs = true` in `config.toml`: a detached process deletes the session's run once it completes. `purge_runs: "true"` also deletes earlier completed runs when a session starts, as a backstop. Set log retention to 1 day. |
+
+### Session logs
+
+Every session's run is named `nix-remote [<session id>]`; the ID is printed
+when the session starts. When the run completes, a detached process saves its
+log to `~/.local/state/nix-remote/logs/<session id>.log` (mode 700 directory).
+Only then does it delete the run, if `delete_runs` is set.
+
+```sh
+nix-remote logs            # list saved session logs
+nix-remote logs b7k2qx     # saved copy, or the run on GitHub if it still exists
+```
+
+These logs cover the builder lifecycle: setup, tailnet join, watchdog and push
+counts, with masked values shown as `***`. Build output never goes through
+GitHub. Nix streams it to the machine that ran the build, so use `nix log
+<drv>` there as usual.
 
 Still visible while a run exists: that a run happened, its duration, the
 builder job names (`x86-0`, `darwin-0`), runner images, and the tailnet tag

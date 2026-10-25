@@ -458,25 +458,67 @@ def signal-done [nodes: list<any>] {
     } | ignore
 }
 
-# Delete a session's workflow run once it completes, from a detached process,
-# so the run and its logs do not stay visible in the runner repository.
-def reap-run [settings: record, session_id: string] {
-    if not $settings.delete_runs {
-        return
+# Local copies of session run logs (kept before runs are deleted).
+def logs-dir []: nothing -> string {
+    $env.XDG_STATE_HOME? | default (
+        $env.HOME?
+        | default "~"
+        | path expand
+        | path join ".local" "state"
+    ) | path join "nix-remote" "logs"
+}
+
+# Run ID of a session's workflow run, or null.
+def session-run [repo: string, session_id: string]: nothing -> any {
+    let runs = (
+        gh run list --repo $repo --limit 100 --json databaseId,status,conclusion,displayTitle
+        | complete
+    )
+    if $runs.exit_code != 0 {
+        return null
     }
+    try {
+        $runs.stdout | from json
+    } catch {
+        []
+    }
+    | where ($it.displayTitle? | default "" | str contains $"[($session_id)]")
+    | get 0?
+}
+
+# Once a session's workflow run completes, save its log under logs-dir and,
+# with delete_runs, delete the run so it does not stay visible in the runner
+# repository. Runs from a detached process.
+def reap-run [settings: record, session_id: string] {
     let script = '
+        repo="$1" session="$2" dir="$3" delete="$4"
         for _ in $(seq 120); do
-            id=$(gh run list --repo "$1" --limit 50 --json databaseId,status,displayTitle \
-                --jq ".[] | select(.status == \"completed\") | select(.displayTitle | contains(\"[$2]\")) | .databaseId" \
+            id=$(gh run list --repo "$repo" --limit 50 --json databaseId,status,displayTitle \
+                --jq ".[] | select(.status == \"completed\") | select(.displayTitle | contains(\"[$session]\")) | .databaseId" \
                 2>/dev/null | head -n 1)
             if [ -n "$id" ]; then
-                gh api -X DELETE "repos/$1/actions/runs/$id" >/dev/null 2>&1
+                mkdir -p "$dir" && chmod 700 "$dir"
+                # Logs can lag completion by a few seconds.
+                for _ in 1 2 3 4 5 6; do
+                    gh run view "$id" --repo "$repo" --log > "$dir/$session.log.tmp" 2>/dev/null \
+                        && mv "$dir/$session.log.tmp" "$dir/$session.log" && break
+                    sleep 10
+                done
+                rm -f "$dir/$session.log.tmp"
+                if [ "$delete" = true ]; then
+                    gh api -X DELETE "repos/$repo/actions/runs/$id" >/dev/null 2>&1
+                fi
                 exit 0
             fi
             sleep 15
         done'
-    ^bash -c 'nohup bash -c "$0" _ "$1" "$2" >/dev/null 2>&1 &' $script $settings.repo $session_id
-    print "The session's workflow run will be deleted once it finishes."
+    let delete = if $settings.delete_runs { "true" } else { "false" }
+    ^bash -c 'nohup bash -c "$0" _ "$1" "$2" "$3" "$4" >/dev/null 2>&1 &' $script $settings.repo $session_id (logs-dir) $delete
+    if $settings.delete_runs {
+        print $"Session log will be saved to (logs-dir)/($session_id).log, then the workflow run deleted."
+    } else {
+        print $"Session log will be saved to (logs-dir)/($session_id).log once the run finishes."
+    }
 }
 
 # Dispatch the builders and wait until all are reachable over Tailscale SSH.
@@ -1077,4 +1119,46 @@ def "main status" [
     })
     write-machines $settings.machines_file
     print ($report | table)
+}
+
+# Show a session's builder log: the saved copy, or the run on GitHub if it still exists.
+#
+# Build output itself is not in it; Nix streams it to the machine that ran the
+# build (`nix log <drv>`). Without a session, lists saved logs.
+def "main logs" [
+  --repo: string # Runner repository (default: from config)
+  session?: string # Session ID, e.g. b7k2qx
+] {
+    let dir = logs-dir
+    if $session == null {
+        if not ($dir | path exists) {
+            print "No saved session logs."
+            return
+        }
+        print (
+            ls $dir
+            | where name =~ '\.log$'
+            | select name size modified
+            | sort-by modified --reverse
+            | table
+        )
+        return
+    }
+    let saved = $dir | path join $"($session).log"
+    if ($saved | path exists) {
+        print (open --raw $saved)
+        return
+    }
+    let settings = resolve-settings $repo null null null
+    let run = session-run $settings.repo $session
+    if $run == null {
+        print --stderr $"No saved log and no run for session ($session) in ($settings.repo)."
+        exit 1
+    }
+    print --stderr $"Run ($run.databaseId) \(($run.status)\): https://github.com/($settings.repo)/actions/runs/($run.databaseId)"
+    if $run.status == "completed" {
+        ^gh run view $run.databaseId --repo $settings.repo --log
+    } else {
+        ^gh run view $run.databaseId --repo $settings.repo
+    }
 }
