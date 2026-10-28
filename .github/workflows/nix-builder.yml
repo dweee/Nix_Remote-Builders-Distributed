@@ -333,6 +333,20 @@ jobs:
         with:
           extra-conf: ${{ steps.nix-conf.outputs.conf }}
 
+      - name: "Install netrc for Determinate Nix"
+        # Determinate Nix pins `netrc-file` to /nix/var/determinate/netrc, so the
+        # `netrc-file` extra-conf line above never takes effect and Attic pulls
+        # fail with 401. Append our credentials to the file it actually reads.
+        shell: bash
+        run: |
+          set -euo pipefail
+          dnetrc=$(nix config show netrc-file)
+          if [ "$dnetrc" != "$RUNNER_TEMP/nix-remote/netrc" ] && [ -s "$RUNNER_TEMP/nix-remote/netrc" ]; then
+            sudo tee -a "$dnetrc" < "$RUNNER_TEMP/nix-remote/netrc" > /dev/null
+            sudo chown root:"$(id -gn)" "$dnetrc"
+            sudo chmod 640 "$dnetrc"
+          fi
+
       - name: "Setup Magic Nix Cache"
         if: ${{ inputs.magic_nix_cache != 'false' }}
         uses: DeterminateSystems/magic-nix-cache-action@v14
