@@ -244,11 +244,31 @@ jobs:
       - name: "Checkout repository"
         uses: actions/checkout@v7
 
+      - name: "Checkout gccarch probe"
+        uses: actions/checkout@v7
+        with:
+          repository: dweee/Nix_Remote-Builders-Distributed
+          # github.job_workflow_sha is an OIDC claim, not a GitHub context field.
+          # Pin the probe independently because reusable workflows run in the
+          # caller's checkout and github.sha refers to the caller's revision.
+          ref: 1da0e15918f871896942ded7d2dc6e7ad077b10f
+          path: .nix-remote-src
+          sparse-checkout: .github/actions/probe-gccarch
+
       - name: "Probe CPU architectures"
         id: gccarch
-        # Same commit as this workflow file. A relative uses: would look in the
-        # caller (dweee/nix-builders), which only has the thin dispatch workflow.
-        uses: dweee/Nix_Remote-Builders-Distributed/.github/actions/probe-gccarch@${{ github.job_workflow_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          features=$(bash .nix-remote-src/.github/actions/probe-gccarch/probe-gccarch.sh | head -n 1)
+          mkdir -p "$HOME/.config/nix-remote"
+          printf '%s\n' "$features" > "$HOME/.config/nix-remote/gccarch"
+          echo "features=$features" >> "$GITHUB_OUTPUT"
+          if [ -n "$features" ]; then
+            echo "gccarch features: $features"
+          else
+            echo "No gccarch features beyond the stock baseline."
+          fi
 
       - name: "Resolve substituters"
         id: nix-conf
@@ -329,9 +349,39 @@ jobs:
           echo "Configured ${count} extra substituter(s)."
 
       - name: "Setup Nix"
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3 # v3
         with:
           extra-conf: ${{ steps.nix-conf.outputs.conf }}
+          source-tag: v3.24.1
+          # This repository deliberately suppresses builder metadata in public runs.
+          summarize: false
+
+      - name: "Verify Determinate Nix"
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(nix --version)
+          case "$version" in
+            *"Determinate Nix 3.24.1"*) ;;
+            *) echo "::error::Expected Determinate Nix 3.24.1, got $version"; exit 1 ;;
+          esac
+          # Exercise the daemon store instead of merely checking the client binary.
+          nix store info --store daemon --json > "$RUNNER_TEMP/nix-remote/daemon-info.json"
+          determinate-nixd version
+
+      - name: "Install netrc for Determinate Nix"
+        # Determinate Nix pins `netrc-file` to /nix/var/determinate/netrc, so the
+        # `netrc-file` extra-conf line above never takes effect and Attic pulls
+        # fail with 401. Append our credentials to the file it actually reads.
+        shell: bash
+        run: |
+          set -euo pipefail
+          dnetrc=$(nix config show netrc-file)
+          if [ "$dnetrc" != "$RUNNER_TEMP/nix-remote/netrc" ] && [ -s "$RUNNER_TEMP/nix-remote/netrc" ]; then
+            sudo tee -a "$dnetrc" < "$RUNNER_TEMP/nix-remote/netrc" > /dev/null
+            sudo chown root:"$(id -gn)" "$dnetrc"
+            sudo chmod 640 "$dnetrc"
+          fi
 
       - name: "Install netrc for Determinate Nix"
         # Determinate Nix pins `netrc-file` to /nix/var/determinate/netrc, so the
