@@ -4,6 +4,7 @@ on:
     paths:
       - .github/workflows/nix-builder.yml
       - .github/workflows/determinate-smoke.yml
+      - .github/scripts/test-determinate-cache.py
   workflow_dispatch:
 
 permissions:
@@ -17,6 +18,9 @@ jobs:
         runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.runner }}
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
       - uses: DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3 # v3
         with:
           source-tag: v3.24.1
@@ -29,3 +33,5 @@ jobs:
           determinate-nixd version
           nix store info --store daemon --json
           test "$(nix eval --raw --expr 'builtins.toString (1 + 1)')" = 2
+      - name: Check authenticated daemon substitution
+        run: python3 .github/scripts/test-determinate-cache.py
