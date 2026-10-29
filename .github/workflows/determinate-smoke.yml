@@ -1,0 +1,31 @@
+name: Determinate Nix smoke test
+on:
+  pull_request:
+    paths:
+      - .github/workflows/nix-builder.yml
+      - .github/workflows/determinate-smoke.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3 # v3
+        with:
+          source-tag: v3.24.1
+          summarize: false
+      - name: Check client, daemon and evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix --version | grep -F 'Determinate Nix 3.24.1'
+          determinate-nixd version
+          nix store info --store daemon --json
+          test "$(nix eval --raw --expr 'builtins.toString (1 + 1)')" = 2
