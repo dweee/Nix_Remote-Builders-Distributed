@@ -27,6 +27,18 @@ jobs:
         with:
           source-tag: v3.24.1
           summarize: false
+      - name: Make Nix daemon available to macOS SSH sessions
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          daemon=/usr/local/bin/nix-daemon
+          if [ ! -e "$daemon" ]; then
+            sudo ln -s /nix/var/nix/profiles/default/bin/nix-daemon "$daemon"
+          fi
+          test -x "$daemon"
+          env -i PATH=/usr/local/bin:/usr/bin:/bin /bin/bash -c 'command -v nix-daemon'
+
       - name: Check client, daemon and evaluation
         shell: bash
         run: |
