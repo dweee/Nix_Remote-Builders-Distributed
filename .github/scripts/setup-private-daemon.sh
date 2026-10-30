@@ -79,7 +79,12 @@ EOF
     for socket in /var/run/determinate-nixd.socket /var/run/nix-daemon.socket; do
       if [ -S "$socket" ]; then rm -f "$socket"; fi
     done
-    launchctl bootstrap system "$plist"
+    echo 'Bootstrapping Determinate Nix daemon'
+    if ! launchctl bootstrap system "$plist"; then
+      /usr/bin/log show --last 2m --style compact --predicate 'process == "launchd" AND (eventMessage CONTAINS "determinate.nix-daemon" OR eventMessage CONTAINS "nix-daemon.socket" OR eventMessage CONTAINS "determinate-nixd.socket")' 2>/dev/null | tail -80 || true
+      exit 1
+    fi
+    echo 'Bootstrapping private netrc refresh service'
     launchctl bootstrap system /Library/LaunchDaemons/fail.monke.nix-remote-private-refresh.plist
     ;;
   *) echo 'Unsupported builder operating system.' >&2; exit 1 ;;
