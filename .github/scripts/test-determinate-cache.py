@@ -45,9 +45,9 @@ with tempfile.TemporaryDirectory(prefix='determinate-cache-') as directory:
     cache = root / 'cache'; cache.mkdir()
     nix('copy', '--to', cache.as_uri(), out, env=env)
     nix('store', 'delete', out, env=env)
-    netrc = root / 'netrc'; netrc.write_text('machine 127.0.0.1 login ci password synthetic-read-only\n'); netrc.chmod(0o600)
-    conf = root / 'nix.conf'; conf.write_text('netrc-file = ' + str(netrc) + '\n')
-    env['NIX_USER_CONF_FILES'] = str(conf)
+    # The setup step configures only the daemon. Do not pass a private netrc
+    # setting from this client: that could hide a broken daemon configuration.
+    env.pop('NIX_USER_CONF_FILES', None)
     server = http.server.HTTPServer(('127.0.0.1', 0), functools.partial(Cache, directory=cache))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix='determinate-cache-') as directory:
         assert restored == out and Path(out).read_text().strip() == 'verified'
         assert any(path.endswith('.narinfo') and ok for path, ok in seen), seen
         assert any('/nar/' in path and ok for path, ok in seen), seen
-        print('Daemon substituted a signed output using a synthetic job-local netrc.')
+        print('Daemon substituted a signed output using its private synthetic netrc.')
     finally:
         server.shutdown()
         server.server_close()
