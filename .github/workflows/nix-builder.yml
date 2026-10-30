@@ -393,6 +393,18 @@ jobs:
           nix path-info --all > "$RUNNER_TEMP/nix-remote/store-before"
           echo "Store holds $(wc -l < "$RUNNER_TEMP/nix-remote/store-before") paths before the session."
 
+      - name: Make Nix daemon available to macOS SSH sessions
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          daemon=/usr/local/bin/nix-daemon
+          if [ ! -e "$daemon" ]; then
+            sudo ln -s /nix/var/nix/profiles/default/bin/nix-daemon "$daemon"
+          fi
+          test -x "$daemon"
+          env -i PATH=/usr/local/bin:/usr/bin:/bin /bin/bash -c 'command -v nix-daemon'
+
       - name: "Connect Tailscale with SSH"
         uses: tailscale/github-action@v4
         with:
