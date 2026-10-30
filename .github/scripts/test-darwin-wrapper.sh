@@ -4,7 +4,6 @@ set -euo pipefail
 [ "$(id -u)" = 0 ] && [ "$(uname -s)" = Darwin ]
 : "${SUDO_USER:?Run with sudo from the hosted runner user}"
 plist=/Library/LaunchDaemons/systems.determinate.nix-daemon.plist
-state=/nix/var/nix/nix-remote-private
 backup=$(mktemp /private/tmp/nixd-plist.XXXXXXXX)
 cp "$plist" "$backup"
 wrapper=$(mktemp /private/tmp/nixd-wrapper.XXXXXXXX)
@@ -34,8 +33,10 @@ with open(p,'wb') as f: plistlib.dump(data,f)
 PY
 plutil -lint "$plist"
 bootstrapped=false
-for attempt in {1..11}; do
+attempt=0
+while [ "$attempt" -lt 11 ]; do
   if launchctl bootstrap system "$plist"; then bootstrapped=true; break; fi
+  attempt=$((attempt + 1))
   sleep 0.5
 done
 [ "$bootstrapped" = true ]
