@@ -7,6 +7,7 @@ on:
       - .github/scripts/test-determinate-cache.py
       - .github/scripts/setup-private-daemon.sh
       - .github/scripts/refresh-private-netrc.pl
+      - .github/scripts/test-darwin-wrapper.sh
   workflow_dispatch:
 
 permissions:
@@ -61,3 +62,6 @@ jobs:
           nix store info --store daemon --json > /dev/null
       - name: Check authenticated daemon substitution
         run: python3 .github/scripts/test-determinate-cache.py
+      - name: Check launchd exec wrapper with authenticated daemon substitution
+        if: runner.os == 'macOS'
+        run: sudo -E bash .github/scripts/test-darwin-wrapper.sh
