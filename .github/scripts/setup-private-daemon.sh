@@ -80,7 +80,15 @@ EOF
       if [ -S "$socket" ]; then rm -f "$socket"; fi
     done
     echo 'Bootstrapping Determinate Nix daemon'
-    if ! launchctl bootstrap system "$plist"; then
+    bootstrapped=false
+    for attempt in {1..11}; do
+      if launchctl bootstrap system "$plist"; then
+        bootstrapped=true
+        break
+      fi
+      if [ "$attempt" -lt 11 ]; then sleep 0.5; fi
+    done
+    if [ "$bootstrapped" != true ]; then
       /usr/bin/log show --last 2m --style compact --predicate 'process == "launchd" AND (eventMessage CONTAINS "determinate.nix-daemon" OR eventMessage CONTAINS "nix-daemon.socket" OR eventMessage CONTAINS "determinate-nixd.socket")' 2>/dev/null | tail -80 || true
       exit 1
     fi
