@@ -5,6 +5,8 @@ on:
       - .github/workflows/nix-builder.yml
       - .github/workflows/determinate-smoke.yml
       - .github/scripts/test-determinate-cache.py
+      - .github/scripts/setup-private-daemon.sh
+      - .github/scripts/refresh-private-netrc.pl
   workflow_dispatch:
 
 permissions:
@@ -33,5 +35,17 @@ jobs:
           determinate-nixd version
           nix store info --store daemon --json
           test "$(nix eval --raw --expr 'builtins.toString (1 + 1)')" = 2
+      - name: Configure daemon-only synthetic cache credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          printf 'machine 127.0.0.1 login ci password synthetic-read-only\n' > "$RUNNER_TEMP/synthetic.netrc"
+          sudo bash .github/scripts/setup-private-daemon.sh "$RUNNER_TEMP/synthetic.netrc" .github/scripts/refresh-private-netrc.pl
+          if test -r /nix/var/nix/nix-remote-private/combined.netrc; then
+            echo 'Private daemon netrc is readable by the job user.' >&2
+            exit 1
+          fi
+          nix store info --store daemon --json > /dev/null
       - name: Check authenticated daemon substitution
         run: python3 .github/scripts/test-determinate-cache.py
