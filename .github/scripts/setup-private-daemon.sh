@@ -74,6 +74,11 @@ EOF
 EOF
     chmod 0644 /Library/LaunchDaemons/fail.monke.nix-remote-private-refresh.plist
     launchctl bootout system/systems.determinate.nix-daemon
+    # launchd can leave its Unix socket paths behind after bootout; the
+    # Determinate installer removes these before bootstrapping as well.
+    for socket in /var/run/determinate-nixd.socket /var/run/nix-daemon.socket; do
+      if [ -S "$socket" ]; then rm -f "$socket"; fi
+    done
     launchctl bootstrap system "$plist"
     launchctl bootstrap system /Library/LaunchDaemons/fail.monke.nix-remote-private-refresh.plist
     ;;
