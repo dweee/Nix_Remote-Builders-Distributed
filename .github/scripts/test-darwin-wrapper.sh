@@ -41,3 +41,19 @@ while [ "$attempt" -lt 11 ]; do
 done
 [ "$bootstrapped" = true ]
 sudo -u "$SUDO_USER" env "PATH=/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin" python3 .github/scripts/test-determinate-cache.py
+# Exercise the rollback explicitly; the EXIT trap remains a last-resort cleanup.
+launchctl bootout system/systems.determinate.nix-daemon
+cp "$backup" "$plist"
+for socket in /var/run/determinate-nixd.socket /var/run/nix-daemon.socket; do [ ! -S "$socket" ] || rm -f "$socket"; done
+bootstrapped=false
+attempt=0
+while [ "$attempt" -lt 11 ]; do
+  if launchctl bootstrap system "$plist"; then bootstrapped=true; break; fi
+  attempt=$((attempt + 1))
+  sleep 0.5
+done
+[ "$bootstrapped" = true ]
+sudo -u "$SUDO_USER" env "PATH=/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin" python3 .github/scripts/test-determinate-cache.py
+trap - EXIT
+rm -f "$backup" "$wrapper"
+echo 'Restored original installer plist and verified authenticated daemon substitution.'
