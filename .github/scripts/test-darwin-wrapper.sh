@@ -39,4 +39,4 @@ for attempt in {1..11}; do
   sleep 0.5
 done
 [ "$bootstrapped" = true ]
-sudo -u "$SUDO_USER" python3 .github/scripts/test-determinate-cache.py
+sudo -u "$SUDO_USER" env "PATH=/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin" python3 .github/scripts/test-determinate-cache.py
