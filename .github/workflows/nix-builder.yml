@@ -244,16 +244,18 @@ jobs:
       - name: "Checkout repository"
         uses: actions/checkout@v7
 
-      - name: "Checkout gccarch probe"
+      - name: "Checkout pinned builder helpers"
         uses: actions/checkout@v7
         with:
           repository: dweee/Nix_Remote-Builders-Distributed
           # github.job_workflow_sha is an OIDC claim, not a GitHub context field.
-          # Pin the probe independently because reusable workflows run in the
+          # Pin the helpers independently because reusable workflows run in the
           # caller's checkout and github.sha refers to the caller's revision.
-          ref: 1da0e15918f871896942ded7d2dc6e7ad077b10f
+          ref: b597c7b894abd3b36520d467bd20aa11aea88033
           path: .nix-remote-src
-          sparse-checkout: .github/actions/probe-gccarch
+          sparse-checkout: |
+            .github/actions/probe-gccarch
+            .github/scripts
 
       - name: "Probe CPU architectures"
         id: gccarch
@@ -334,7 +336,6 @@ jobs:
           delim="EOF_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
           {
             echo "conf<<$delim"
-            echo "netrc-file = $netrc"
             # trim leading/trailing whitespace from the space-separated lists
             substituters=$(xargs <<<"$substituters")
             keys=$(xargs <<<"$keys")
@@ -369,32 +370,15 @@ jobs:
           nix store info --store daemon --json > "$RUNNER_TEMP/nix-remote/daemon-info.json"
           determinate-nixd version
 
-      - name: "Install netrc for Determinate Nix"
-        # Determinate Nix pins `netrc-file` to /nix/var/determinate/netrc, so the
-        # `netrc-file` extra-conf line above never takes effect and Attic pulls
-        # fail with 401. Append our credentials to the file it actually reads.
+      - name: "Configure private daemon cache credentials"
         shell: bash
         run: |
           set -euo pipefail
-          dnetrc=$(nix config show netrc-file)
-          if [ "$dnetrc" != "$RUNNER_TEMP/nix-remote/netrc" ] && [ -s "$RUNNER_TEMP/nix-remote/netrc" ]; then
-            sudo tee -a "$dnetrc" < "$RUNNER_TEMP/nix-remote/netrc" > /dev/null
-            sudo chown root:"$(id -gn)" "$dnetrc"
-            sudo chmod 640 "$dnetrc"
-          fi
-
-      - name: "Install netrc for Determinate Nix"
-        # Determinate Nix pins `netrc-file` to /nix/var/determinate/netrc, so the
-        # `netrc-file` extra-conf line above never takes effect and Attic pulls
-        # fail with 401. Append our credentials to the file it actually reads.
-        shell: bash
-        run: |
-          set -euo pipefail
-          dnetrc=$(nix config show netrc-file)
-          if [ "$dnetrc" != "$RUNNER_TEMP/nix-remote/netrc" ] && [ -s "$RUNNER_TEMP/nix-remote/netrc" ]; then
-            sudo tee -a "$dnetrc" < "$RUNNER_TEMP/nix-remote/netrc" > /dev/null
-            sudo chown root:"$(id -gn)" "$dnetrc"
-            sudo chmod 640 "$dnetrc"
+          if [ -s "$RUNNER_TEMP/nix-remote/netrc" ]; then
+            sudo bash .nix-remote-src/.github/scripts/setup-private-daemon.sh \
+              "$RUNNER_TEMP/nix-remote/netrc" \
+              .nix-remote-src/.github/scripts/refresh-private-netrc.pl
+            nix store info --store daemon --json > /dev/null
           fi
 
       - name: "Setup Magic Nix Cache"
