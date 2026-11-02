@@ -72,10 +72,12 @@ in
   config = mkIf cfg.enable (
     lib.mkMerge [
       {
-        environment.systemPackages = [ cfg.package ];
-        environment.variables.NIX_REMOTE_MACHINES_FILE = cfg.machinesFile;
-        environment.etc."nix-remote/config.toml" = mkIf (cfg.settings != { }) {
-          source = tomlFormat.generate "nix-remote-config.toml" cfg.settings;
+        environment = {
+          systemPackages = [ cfg.package ];
+          variables.NIX_REMOTE_MACHINES_FILE = cfg.machinesFile;
+          etc."nix-remote/config.toml" = mkIf (cfg.settings != { }) {
+            source = tomlFormat.generate "nix-remote-config.toml" cfg.settings;
+          };
         };
 
         nix.settings = {
