@@ -119,6 +119,11 @@ def resolve-settings [
         # delete each session's run once it has finished.
         show_target: (($config | get --optional show_target) == true)
         delete_runs: (($config | get --optional delete_runs) == true)
+        # Reap in the foreground (see reap-run), for systemd services and CI.
+        wait_for_log: (
+            (($config | get --optional wait_for_log) == true)
+            or ($env.NIX_REMOTE_WAIT_FOR_LOG? == "1")
+        )
     }
 }
 
@@ -517,8 +522,28 @@ def reap-run [settings: record, session_id: string] {
                 exit 0
             fi
             sleep 15
-        done'
+        done
+        exit 1'
     let delete = if $settings.delete_runs { "true" } else { "false" }
+    if $settings.wait_for_log {
+        # Services and CI jobs kill detached children when they exit, which
+        # would leave the run undeleted. Wait here instead.
+        print $"Waiting for session ($session_id)'s run to finish..."
+        let reaped = (
+            ^bash -c $script _ $settings.repo $session_id (logs-dir) $delete
+            | complete
+        )
+        if $reaped.exit_code == 0 {
+            if $settings.delete_runs {
+                print $"Session log saved to (logs-dir)/($session_id).log; workflow run deleted."
+            } else {
+                print $"Session log saved to (logs-dir)/($session_id).log."
+            }
+        } else {
+            print --stderr $"Warning: session ($session_id)'s run did not finish within 30 minutes; its log was not saved."
+        }
+        return
+    }
     ^bash -c 'nohup bash -c "$0" _ "$1" "$2" "$3" "$4" >/dev/null 2>&1 &' $script $settings.repo $session_id (logs-dir) $delete
     if $settings.delete_runs {
         print $"Session log will be saved to (logs-dir)/($session_id).log, then the workflow run deleted."
