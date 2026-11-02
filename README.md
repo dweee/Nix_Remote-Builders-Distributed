@@ -509,6 +509,12 @@ when the session starts. When the run completes, a detached process saves its
 log to `~/.local/state/nix-remote/logs/<session id>.log` (mode 700 directory).
 Only then does it delete the run, if `delete_runs` is set.
 
+A systemd service or CI job kills that detached process when it exits, so the
+run would never be deleted. Set `wait_for_log = true` in `config.toml` (or
+`NIX_REMOTE_WAIT_FOR_LOG=1`) to wait for the run, save its log and delete it
+before `nix-remote` returns. The wait also covers the builders' cache push,
+which runs as they shut down.
+
 ```sh
 nix-remote logs            # list saved session logs
 nix-remote logs b7k2qx     # saved copy, or the run on GitHub if it still exists
