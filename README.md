@@ -453,7 +453,17 @@ and pushes them before shutting down:
 | Target | Inputs |
 | :--- | :--- |
 | Attic | `attic_server`, `attic_cache`, `secrets.ATTIC_TOKEN` (push permission). `attic_push: "false"` to only substitute. Attic skips paths already signed by its upstream caches. |
+| Niks3 (additional target) | `niks3_push: "true"`, `niks3_server` or `secrets.NIKS3_ENDPOINT`. Uses GitHub OIDC; the caller must grant `id-token: write` and the server must allow its repository, event and ref. No static token or read credentials are needed. |
 | Any Nix store | `push_to`, e.g. `s3://bucket?region=eu-west-1`, `file:///…`, `ssh-ng://cache-host`. `secrets.NIX_SIGNING_KEY` signs the paths first. `secrets.AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` for S3. |
+
+Niks3 publication is off by default and independent of Attic substitution and
+push. It uses the pinned Niks3 client with integrity verification and refreshes
+the audience-specific JWT during long uploads. Token files are private and
+removed after publication; per-path diagnostics stay out of public logs even
+with `verbose_logs`. The publisher sets `http2 = false` for large NARs.
+It does not enable Niks3 reads or add it as a substituter. For a private cache,
+read access is a separate owner decision; Attic-only builders may rebuild paths
+that other CI publishers have uploaded only to Niks3.
 
 #### Backblaze B2
 

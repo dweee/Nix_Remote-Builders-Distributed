@@ -117,6 +117,16 @@ on:
         type: string
         default: "true"
 
+      # Independent OIDC publication; does not configure substitution.
+      niks3_push:
+        description: "Also publish selected outputs to Niks3 with GitHub OIDC"
+        type: string
+        default: "false"
+      niks3_server:
+        description: "Niks3 HTTPS endpoint and OIDC audience (or use NIKS3_ENDPOINT secret)"
+        type: string
+        default: ""
+
       # Generic binary cache push through `nix copy`.
       push_to:
         description: "Nix store URI to copy built outputs to (e.g. s3://bucket?region=..., ssh-ng://host)"
@@ -148,6 +158,9 @@ on:
         required: false
       ATTIC_TOKEN:
         description: "Attic token (pull for substitution, push for uploads)"
+        required: false
+      NIKS3_ENDPOINT:
+        description: "Niks3 endpoint and audience; alternative to niks3_server"
         required: false
       NIX_NETRC:
         description: "netrc contents for authenticated substituters"
@@ -229,7 +242,7 @@ jobs:
           VALUES: >-
             ${{ inputs.substituters || secrets.NIX_SUBSTITUTERS }} ${{ inputs.trusted_public_keys || secrets.NIX_TRUSTED_PUBLIC_KEYS }}
             ${{ inputs.attic_server || secrets.ATTIC_ENDPOINT }} ${{ inputs.attic_substituter || secrets.ATTIC_SUBSTITUTER }}
-            ${{ inputs.attic_public_key || secrets.ATTIC_PUBLIC_KEY }} ${{ inputs.push_to || secrets.NIX_PUSH_TO }}
+            ${{ inputs.attic_public_key || secrets.ATTIC_PUBLIC_KEY }} ${{ inputs.push_to || secrets.NIX_PUSH_TO }} ${{ inputs.niks3_server || secrets.NIKS3_ENDPOINT }}
           ATTIC_SERVER: ${{ inputs.attic_server || secrets.ATTIC_ENDPOINT }}
           ATTIC_CACHE: ${{ inputs.attic_cache || secrets.ATTIC_CACHE }}
         run: |
@@ -251,7 +264,7 @@ jobs:
           # github.job_workflow_sha is an OIDC claim, not a GitHub context field.
           # Pin the helpers independently because reusable workflows run in the
           # caller's checkout and github.sha refers to the caller's revision.
-          ref: 2e7268271111a2d8c4775464a076935f62682f2e
+          ref: 51ac2896b73b94ba93c66d2012356119161df0ca
           path: .nix-remote-src
           sparse-checkout: |
             .github/actions/probe-gccarch
@@ -387,6 +400,21 @@ jobs:
         with:
           use-flakehub: false
 
+      - name: "Install OIDC publisher"
+        if: ${{ inputs.niks3_push == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pin the client independently of the caller's flake and registry.
+          log="$RUNNER_TEMP/nix-remote/niks3-install.log"
+          if ! client=$(nix build --no-link --print-out-paths \
+              github:Mic92/niks3/2d5a6b14e0df5c8fecc27571b79c40563c98ec32#niks3 2> "$log"); then
+            echo "::error::Could not install the OIDC publisher (private diagnostics suppressed)."
+            exit 1
+          fi
+          echo "::add-mask::$client"
+          echo "NIKS3_BIN=$client/bin/niks3" >> "$GITHUB_ENV"
+
       - name: "Snapshot store"
         shell: bash
         run: |
@@ -491,6 +519,7 @@ jobs:
         if: ${{ always() }}
         shell: bash
         env:
+          NIKS3_PUSH: ${{ inputs.niks3_push }}
           PUSH_PATHS: ${{ inputs.push_paths }}
           ATTIC_SERVER: ${{ inputs.attic_push != 'false' && (inputs.attic_server || secrets.ATTIC_ENDPOINT) || '' }}
           ATTIC_CACHE: ${{ inputs.attic_cache || secrets.ATTIC_CACHE }}
@@ -502,7 +531,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
-          if { [ -z "$ATTIC_SERVER" ] || [ -z "$ATTIC_CACHE" ]; } && [ -z "$PUSH_TO" ]; then
+          if { [ -z "$ATTIC_SERVER" ] || [ -z "$ATTIC_CACHE" ]; } && [ -z "$PUSH_TO" ] && [ "$NIKS3_PUSH" != "true" ]; then
             echo "No cache push configured."
             exit 0
           fi
@@ -586,3 +615,21 @@ jobs:
               || fail "nix copy failed"
             echo "Copied ${count} path(s) and their closures to the push_to store."
           fi
+
+      - name: "Publish to Niks3 with OIDC"
+        if: ${{ always() && inputs.niks3_push == 'true' }}
+        shell: bash
+        env:
+          NIKS3_SERVER: ${{ inputs.niks3_server || secrets.NIKS3_ENDPOINT }}
+          # Large NAR transfers must not use Nix's HTTP/2 transport.
+          NIX_CONFIG: "http2 = false"
+        run: |
+          set -euo pipefail
+          paths="$RUNNER_TEMP/nix-remote/push-paths"
+          if [ ! -s "$paths" ]; then
+            echo "No selected outputs to publish."
+            exit 0
+          fi
+          python3 .nix-remote-src/.github/scripts/push-niks3.py \
+            "$NIKS3_BIN" "$NIKS3_SERVER" "$paths"
+          echo "Published selected outputs and their closures to Niks3."
