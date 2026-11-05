@@ -18,3 +18,5 @@ jobs:
           for script in .github/scripts/*.sh; do bash -n "$script"; done
           python3 -m py_compile .github/scripts/*.py
           perl -c .github/scripts/refresh-private-netrc.pl
+      - name: Test OIDC publication
+        run: python3 .github/scripts/test-push-niks3.py
