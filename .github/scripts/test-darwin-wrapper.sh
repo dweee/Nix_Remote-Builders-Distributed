@@ -3,6 +3,11 @@
 set -euo pipefail
 [ "$(id -u)" = 0 ] && [ "$(uname -s)" = Darwin ]
 : "${SUDO_USER:?Run with sudo from the hosted runner user}"
+oidc_source=${1:-}
+if [ -n "$oidc_source" ]; then
+  [[ "$oidc_source" =~ ^/[A-Za-z0-9_./-]+$ ]]
+  test -f "$oidc_source"
+fi
 plist=/Library/LaunchDaemons/systems.determinate.nix-daemon.plist
 backup=$(mktemp /private/tmp/nixd-plist.XXXXXXXX)
 cp "$plist" "$backup"
@@ -15,10 +20,10 @@ cleanup() {
   rm -f "$backup" "$wrapper"
 }
 trap cleanup EXIT
-cat > "$wrapper" <<'SCRIPT'
+cat > "$wrapper" <<SCRIPT
 #!/bin/sh
 set -eu
-/usr/bin/perl /nix/var/nix/nix-remote-private/refresh.pl /nix/var/nix/nix-remote-private/attic.netrc /nix/var/determinate/netrc /nix/var/nix/nix-remote-private/combined.netrc
+/usr/bin/perl /nix/var/nix/nix-remote-private/refresh.pl /nix/var/nix/nix-remote-private/attic.netrc /nix/var/determinate/netrc /nix/var/nix/nix-remote-private/combined.netrc $oidc_source
 exec /usr/local/bin/determinate-nixd daemon
 SCRIPT
 chmod 700 "$wrapper"

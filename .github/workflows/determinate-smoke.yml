@@ -68,4 +68,4 @@ jobs:
         run: python3 .github/scripts/test-determinate-cache.py
       - name: Check launchd exec wrapper with authenticated daemon substitution
         if: runner.os == 'macOS'
-        run: sudo -E bash .github/scripts/test-darwin-wrapper.sh
+        run: sudo -E bash .github/scripts/test-darwin-wrapper.sh "$RUNNER_TEMP/synthetic-oidc.netrc"
