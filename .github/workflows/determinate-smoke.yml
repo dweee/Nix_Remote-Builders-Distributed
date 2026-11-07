@@ -56,8 +56,9 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          printf 'machine 127.0.0.1 login ci password synthetic-read-only\n' > "$RUNNER_TEMP/synthetic.netrc"
-          sudo bash .github/scripts/setup-private-daemon.sh "$RUNNER_TEMP/synthetic.netrc" .github/scripts/refresh-private-netrc.pl
+          printf 'machine other.example login ci password unrelated-fixture\n' > "$RUNNER_TEMP/synthetic.netrc"
+          printf 'machine 127.0.0.1 login ci password synthetic-read-only\n' > "$RUNNER_TEMP/synthetic-oidc.netrc"
+          sudo bash .github/scripts/setup-private-daemon.sh "$RUNNER_TEMP/synthetic.netrc" .github/scripts/refresh-private-netrc.pl "$RUNNER_TEMP/synthetic-oidc.netrc"
           if test -r /nix/var/nix/nix-remote-private/combined.netrc; then
             echo 'Private daemon netrc is readable by the job user.' >&2
             exit 1
