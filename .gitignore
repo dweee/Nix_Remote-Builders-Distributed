@@ -3,3 +3,6 @@
 .pre-commit-config.yaml
 result
 result-*
+
+__pycache__/
+*.pyc

@@ -8,6 +8,9 @@ on:
       - .github/scripts/setup-private-daemon.sh
       - .github/scripts/refresh-private-netrc.pl
       - .github/scripts/test-darwin-wrapper.sh
+      - .github/scripts/configure-niks3.py
+      - .github/scripts/niks3-oidc-token.py
+      - .github/scripts/test-niks3-reader.py
   workflow_dispatch:
 
 permissions:
@@ -53,8 +56,9 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          printf 'machine 127.0.0.1 login ci password synthetic-read-only\n' > "$RUNNER_TEMP/synthetic.netrc"
-          sudo bash .github/scripts/setup-private-daemon.sh "$RUNNER_TEMP/synthetic.netrc" .github/scripts/refresh-private-netrc.pl
+          printf 'machine other.example login ci password unrelated-fixture\n' > "$RUNNER_TEMP/synthetic.netrc"
+          printf 'machine 127.0.0.1 login ci password synthetic-read-only\n' > "$RUNNER_TEMP/synthetic-oidc.netrc"
+          sudo bash .github/scripts/setup-private-daemon.sh "$RUNNER_TEMP/synthetic.netrc" .github/scripts/refresh-private-netrc.pl "$RUNNER_TEMP/synthetic-oidc.netrc"
           if test -r /nix/var/nix/nix-remote-private/combined.netrc; then
             echo 'Private daemon netrc is readable by the job user.' >&2
             exit 1
@@ -64,4 +68,4 @@ jobs:
         run: python3 .github/scripts/test-determinate-cache.py
       - name: Check launchd exec wrapper with authenticated daemon substitution
         if: runner.os == 'macOS'
-        run: sudo -E bash .github/scripts/test-darwin-wrapper.sh
+        run: sudo -E bash .github/scripts/test-darwin-wrapper.sh "$RUNNER_TEMP/synthetic-oidc.netrc"

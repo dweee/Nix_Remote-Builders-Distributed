@@ -453,7 +453,7 @@ and pushes them before shutting down:
 | Target | Inputs |
 | :--- | :--- |
 | Attic | `attic_server`, `attic_cache`, `secrets.ATTIC_TOKEN` (push permission). `attic_push: "false"` to only substitute. Attic skips paths already signed by its upstream caches. |
-| Niks3 (additional target) | `niks3_push: "true"`, `niks3_server` or `secrets.NIKS3_ENDPOINT`. Uses GitHub OIDC; the caller must grant `id-token: write` and the server must allow its repository, event and ref. No static token or read credentials are needed. |
+| Niks3 | `niks3_push: "true"`, `niks3_server` or `secrets.NIKS3_ENDPOINT`. Uses GitHub OIDC; the caller must grant `id-token: write` and the server must allow its repository, event and ref. No static fleet credential is needed. Set `niks3_substitute: "true"` to read the shared Flakey cache using a separate read-only audience. The reader refreshes throughout the session and is merged into the daemon-only netrc alongside managed Determinate credentials. PR events are rejected. Our caller disables Attic substitution/publication explicitly; generic Attic inputs remain available for other callers. |
 | Any Nix store | `push_to`, e.g. `s3://bucket?region=eu-west-1`, `file:///…`, `ssh-ng://cache-host`. `secrets.NIX_SIGNING_KEY` signs the paths first. `secrets.AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` for S3. |
 
 Niks3 publication is off by default and independent of Attic substitution and

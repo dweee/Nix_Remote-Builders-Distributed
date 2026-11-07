@@ -6,8 +6,8 @@ use Fcntl qw(:flock :DEFAULT);
 use File::Basename qw(dirname);
 use File::Temp qw(tempfile);
 
-@ARGV == 3 or die "Expected two sources and a destination.\n";
-my ($attic, $managed, $dest) = @ARGV;
+(@ARGV == 3 || @ARGV == 4) or die "Expected two sources, a destination and optional refreshing reader.\n";
+my ($attic, $managed, $dest, $oidc) = @ARGV;
 my $dir = dirname($dest);
 umask 0077;
 if (!-d $dir) { mkdir($dir, 0700) || -d $dir or die "Cannot create private credential directory.\n"; }
@@ -20,9 +20,9 @@ sysopen(my $lock, "$dir/refresh.lock", O_WRONLY | O_CREAT, 0600)
 flock($lock, LOCK_EX) or die "Cannot acquire credential refresh lock.\n";
 my ($out, $temporary) = tempfile('netrc.XXXXXXXX', DIR => $dir, UNLINK => 1);
 binmode($out);
-for my $source ($attic, $managed) {
+for my $source ($attic, (defined($oidc) ? ($oidc) : ()), $managed) {
     if (!open(my $in, '<', $source)) {
-        warn "Attic netrc unavailable; private cache authentication will be retried.\n" if $source eq $attic;
+        warn "Private cache netrc unavailable; private cache authentication will be retried.\n" if $source eq $attic;
         next;
     } else {
         binmode($in);
