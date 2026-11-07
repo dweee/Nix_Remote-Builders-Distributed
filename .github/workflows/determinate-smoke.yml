@@ -8,6 +8,9 @@ on:
       - .github/scripts/setup-private-daemon.sh
       - .github/scripts/refresh-private-netrc.pl
       - .github/scripts/test-darwin-wrapper.sh
+      - .github/scripts/configure-niks3.py
+      - .github/scripts/niks3-oidc-token.py
+      - .github/scripts/test-niks3-reader.py
   workflow_dispatch:
 
 permissions:

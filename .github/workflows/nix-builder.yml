@@ -117,9 +117,13 @@ on:
         type: string
         default: "true"
 
-      # Independent OIDC publication; does not configure substitution.
+      # Independent OIDC reader and publisher grants; static fleet tokens are not used.
       niks3_push:
-        description: "Also publish selected outputs to Niks3 with GitHub OIDC"
+        description: "Publish selected outputs to Niks3 with GitHub OIDC"
+        type: string
+        default: "false"
+      niks3_substitute:
+        description: "Read the shared Flakey private cache with a refreshing read-only GitHub OIDC grant"
         type: string
         default: "false"
       niks3_server:
@@ -264,7 +268,7 @@ jobs:
           # github.job_workflow_sha is an OIDC claim, not a GitHub context field.
           # Pin the helpers independently because reusable workflows run in the
           # caller's checkout and github.sha refers to the caller's revision.
-          ref: 51ac2896b73b94ba93c66d2012356119161df0ca
+          ref: ec93e20fa4f4cde86c551ea8ea4da29b8c423b42
           path: .nix-remote-src
           sparse-checkout: |
             .github/actions/probe-gccarch
@@ -298,6 +302,7 @@ jobs:
           ATTIC_SUBSTITUTER: ${{ inputs.attic_substituter || secrets.ATTIC_SUBSTITUTER }}
           ATTIC_PUBLIC_KEY: ${{ inputs.attic_public_key || secrets.ATTIC_PUBLIC_KEY }}
           ATTIC_SUBSTITUTE: ${{ inputs.attic_substitute }}
+          NIKS3_SUBSTITUTE: ${{ inputs.niks3_substitute }}
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
           NIX_NETRC: ${{ secrets.NIX_NETRC }}
         run: |
@@ -346,6 +351,14 @@ jobs:
             fi
           fi
 
+          if [ "$NIKS3_SUBSTITUTE" = "true" ]; then
+            # The owning caller opts into Niks3-only reads. Preserve unrelated
+            # caches, but do not reintroduce its former Attic URL via secrets.
+            substituters=$(printf '%s\n' "$substituters" | python3 -c 'import sys,urllib.parse; print(" ".join(x for x in sys.stdin.read().split() if urllib.parse.urlsplit(x).hostname not in {"attic.monke.fail", "icicle.eel-ling.ts.net"}))')
+            substituters="$substituters https://niks3.monke.fail/oidc"
+            keys="$keys niks3.monke.fail-1:q13GqiZgAxx7SyoLZInXoJjviZMOdNpfG03xs0VUD2M="
+          fi
+
           delim="EOF_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
           {
             echo "conf<<$delim"
@@ -354,6 +367,7 @@ jobs:
             keys=$(xargs <<<"$keys")
             if [ -n "$substituters" ]; then echo "extra-substituters = $substituters"; fi
             if [ -n "$keys" ]; then echo "extra-trusted-public-keys = $keys"; fi
+            if [ "$NIKS3_SUBSTITUTE" = "true" ]; then echo "http2 = false"; fi
             if [ -n "$EXTRA_NIX_CONF" ]; then printf '%s\n' "$EXTRA_NIX_CONF"; fi
             if [ -n "$GCCARCH" ]; then echo "extra-system-features = $GCCARCH"; fi
             echo "$delim"
@@ -383,14 +397,23 @@ jobs:
           nix store info --store daemon --json > "$RUNNER_TEMP/nix-remote/daemon-info.json"
           determinate-nixd version
 
+      - name: "Configure refreshing read-only Niks3 OIDC"
+        if: ${{ inputs.niks3_substitute == 'true' }}
+        shell: bash
+        run: python3 .nix-remote-src/.github/scripts/configure-niks3.py --oidc
+
       - name: "Configure private daemon cache credentials"
         shell: bash
         run: |
           set -euo pipefail
-          if [ -s "$RUNNER_TEMP/nix-remote/netrc" ]; then
+          oidc=()
+          if [ "${{ inputs.niks3_substitute }}" = "true" ]; then
+            oidc=("$RUNNER_TEMP/flakey-niks3-auth/netrc")
+          fi
+          if [ -s "$RUNNER_TEMP/nix-remote/netrc" ] || [ "${#oidc[@]}" -gt 0 ]; then
             sudo bash .nix-remote-src/.github/scripts/setup-private-daemon.sh \
               "$RUNNER_TEMP/nix-remote/netrc" \
-              .nix-remote-src/.github/scripts/refresh-private-netrc.pl
+              .nix-remote-src/.github/scripts/refresh-private-netrc.pl "${oidc[@]}"
             nix store info --store daemon --json > /dev/null
           fi
 
@@ -633,3 +656,13 @@ jobs:
           python3 .nix-remote-src/.github/scripts/push-niks3.py \
             "$NIKS3_BIN" "$NIKS3_SERVER" "$paths"
           echo "Published selected outputs and their closures to Niks3."
+
+      - name: "Remove Niks3 reader credentials"
+        if: ${{ always() && inputs.niks3_substitute == 'true' }}
+        shell: bash
+        run: |
+          python3 .nix-remote-src/.github/scripts/configure-niks3.py --cleanup
+          # Discard the last copied JWT immediately; managed credentials stay.
+          sudo /usr/bin/perl /nix/var/nix/nix-remote-private/refresh.pl \
+            /nix/var/nix/nix-remote-private/attic.netrc /nix/var/determinate/netrc \
+            /nix/var/nix/nix-remote-private/combined.netrc
