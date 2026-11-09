@@ -125,6 +125,7 @@ def resolve-settings [
         show_target: (($config | get --optional show_target) == true)
         # Omit this input by default for older provider workflows.
         push_paths: $push_paths
+        workflow_ref: ($config | get --optional workflow_ref)
         delete_runs: (($config | get --optional delete_runs) == true)
         # Reap in the foreground (see reap-run), for systemd services and CI.
         wait_for_log: (
@@ -756,6 +757,9 @@ def start-session [
         }
         if $settings.push_paths != null {
             $gh_args ++= [-f $"push_paths=($settings.push_paths)"]
+        }
+        if $settings.workflow_ref != null {
+            $gh_args ++= [--ref $settings.workflow_ref]
         }
 
         let dispatch_res = gh ...$gh_args | complete
