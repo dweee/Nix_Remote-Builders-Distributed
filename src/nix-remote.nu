@@ -64,6 +64,11 @@ def resolve-settings [
 ]: nothing -> record {
     let config = load-config
     let config_file = config-file
+    let push_paths = $config | get --optional push_paths
+    if $push_paths != null and $push_paths not-in ["built", "all"] {
+        print --stderr "Error: push_paths must be 'built' or 'all'."
+        exit 1
+    }
 
     let target_repo = (first-set [
         $repo
@@ -118,6 +123,8 @@ def resolve-settings [
         # Public runner repositories: keep the command out of run names and
         # delete each session's run once it has finished.
         show_target: (($config | get --optional show_target) == true)
+        # Omit this input by default for older provider workflows.
+        push_paths: $push_paths
         delete_runs: (($config | get --optional delete_runs) == true)
         # Reap in the foreground (see reap-run), for systemd services and CI.
         wait_for_log: (
@@ -746,6 +753,9 @@ def start-session [
 
         if $settings.environment != null {
             $gh_args ++= [-f $"environment=($settings.environment)"]
+        }
+        if $settings.push_paths != null {
+            $gh_args ++= [-f $"push_paths=($settings.push_paths)"]
         }
 
         let dispatch_res = gh ...$gh_args | complete

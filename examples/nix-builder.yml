@@ -62,6 +62,11 @@ on:
         description: "Timeout in seconds to wait for initial Tailscale connection (0 to disable)"
         type: number
         default: 300
+      push_paths:
+        description: "Session publication selection: built outputs or all new paths"
+        type: choice
+        options: [built, all]
+        default: built
       timeout_idle:
         description: "Timeout in seconds of inactivity before runner disconnects (0 to disable)"
         type: number
@@ -92,6 +97,7 @@ jobs:
       timeout_startup: ${{ inputs.timeout_startup != '' && format('{0}', inputs.timeout_startup) || '300' }}
       timeout_idle: ${{ inputs.timeout_idle != '' && format('{0}', inputs.timeout_idle) || '300' }}
       timeout_linger: ${{ inputs.timeout_linger != '' && format('{0}', inputs.timeout_linger) || '0' }}
+      push_paths: ${{ inputs.push_paths }}
       attic_push: ${{ vars.ATTIC_PUSH_ENABLED != 'false' && 'true' || 'false' }}
       magic_nix_cache: "false"
       purge_runs: "true"
