@@ -65,6 +65,10 @@ def resolve-settings [
     let config = load-config
     let config_file = config-file
     let push_paths = $config | get --optional push_paths
+    let completion_timeout = $config | get --optional completion_timeout | default 600
+    if ($completion_timeout | describe) != "int" or $completion_timeout < 60 or $completion_timeout > 7200 {
+        error make {msg: "completion_timeout must be an integer from 60 to 7200 seconds"}
+    }
     if $push_paths != null and $push_paths not-in ["built", "all"] {
         print --stderr "Error: push_paths must be 'built' or 'all'."
         exit 1
@@ -126,6 +130,8 @@ def resolve-settings [
         # Omit this input by default for older provider workflows.
         push_paths: $push_paths
         workflow_ref: ($config | get --optional workflow_ref)
+        completion_timeout: $completion_timeout
+        require_success: (($config | get --optional require_success) == true)
         delete_runs: (($config | get --optional delete_runs) == true)
         # Reap in the foreground (see reap-run), for systemd services and CI.
         wait_for_log: (
@@ -504,11 +510,16 @@ def session-run [repo: string, session_id: string]: nothing -> any {
 # repository. Runs from a detached process.
 def reap-run [settings: record, session_id: string] {
     let script = '
-        repo="$1" session="$2" dir="$3" delete="$4"
-        for n in $(seq 120); do
+        repo="$1" session="$2" dir="$3" delete="$4" completion="$5" required="$6"
+        steps=$(((completion + 120 + 14) / 15))
+        if [ "$steps" -lt 120 ]; then steps=120; fi
+        cancelled=false
+        for n in $(seq "$steps"); do
             # A builder that joined after nix-remote moved on never gets the
-            # completion signal, so cancel a run still going after ~10 minutes.
-            if [ "$n" -eq 40 ]; then
+            # completion signal. Leave the configured publication window before
+            # cancelling it; private cold closures can take more than 10 min.
+            if [ $((n * 15)) -ge "$completion" ] && [ "$cancelled" = false ]; then
+                cancelled=true
                 open=$(gh run list --repo "$repo" --limit 50 --json databaseId,status,displayTitle                     --jq ".[] | select(.status != \"completed\") | select(.displayTitle | contains(\"[$session]\")) | .databaseId"                     2>/dev/null | head -n 1)
                 if [ -n "$open" ]; then gh run cancel "$open" --repo "$repo" >/dev/null 2>&1; fi
             fi
@@ -517,6 +528,10 @@ def reap-run [settings: record, session_id: string] {
                 2>/dev/null | head -n 1)
             if [ -n "$id" ]; then
                 mkdir -p "$dir" && chmod 700 "$dir"
+                # Save authenticated API identity/conclusion before deletion.
+                gh run view "$id" --repo "$repo" --json databaseId,headSha,status,conclusion,displayTitle \
+                    > "$dir/$session.json.tmp" 2>/dev/null || exit 1
+                mv "$dir/$session.json.tmp" "$dir/$session.json"
                 # Logs can lag completion by a few seconds.
                 for _ in 1 2 3 4 5 6; do
                     gh run view "$id" --repo "$repo" --log > "$dir/$session.log.tmp" 2>/dev/null \
@@ -526,6 +541,10 @@ def reap-run [settings: record, session_id: string] {
                 rm -f "$dir/$session.log.tmp"
                 if [ "$delete" = true ]; then
                     gh api -X DELETE "repos/$repo/actions/runs/$id" >/dev/null 2>&1
+                fi
+                if [ "$required" = true ]; then
+                    gh_success=$(jq -r .conclusion "$dir/$session.json")
+                    if [ "$gh_success" != success ]; then exit 1; fi
                 fi
                 exit 0
             fi
@@ -538,7 +557,7 @@ def reap-run [settings: record, session_id: string] {
         # would leave the run undeleted. Wait here instead.
         print $"Waiting for session ($session_id)'s run to finish..."
         let reaped = (
-            ^bash -c $script _ $settings.repo $session_id (logs-dir) $delete
+            ^bash -c $script _ $settings.repo $session_id (logs-dir) $delete $settings.completion_timeout ($settings.require_success | into string)
             | complete
         )
         if $reaped.exit_code == 0 {
@@ -548,11 +567,14 @@ def reap-run [settings: record, session_id: string] {
                 print $"Session log saved to (logs-dir)/($session_id).log."
             }
         } else {
-            print --stderr $"Warning: session ($session_id)'s run did not finish within 30 minutes; its log was not saved."
+            if $settings.require_success {
+                error make {msg: $"Session ($session_id) publication did not complete successfully"}
+            }
+            print --stderr $"Warning: session ($session_id)'s run did not finish successfully; inspect the saved metadata/log."
         }
         return
     }
-    ^bash -c 'nohup bash -c "$0" _ "$1" "$2" "$3" "$4" >/dev/null 2>&1 &' $script $settings.repo $session_id (logs-dir) $delete
+    ^bash -c 'nohup bash -c "$0" _ "$1" "$2" "$3" "$4" "$5" "$6" >/dev/null 2>&1 &' $script $settings.repo $session_id (logs-dir) $delete $settings.completion_timeout ($settings.require_success | into string)
     if $settings.delete_runs {
         print $"Session log will be saved to (logs-dir)/($session_id).log, then the workflow run deleted."
     } else {

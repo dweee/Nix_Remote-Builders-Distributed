@@ -22,6 +22,7 @@ jobs:
         run: |
           python3 .github/scripts/test-push-niks3.py
           python3 .github/scripts/test-niks3-reader.py
+          python3 .github/scripts/test-session-completion.py
       - uses: DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3 # v3
         with:
           source-tag: v3.24.1
