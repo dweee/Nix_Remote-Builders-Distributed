@@ -568,7 +568,9 @@ def reap-run [settings: record, session_id: string] {
             }
         } else {
             if $settings.require_success {
-                error make {msg: $"Session ($session_id) publication did not complete successfully"}
+                error make {
+                    msg: $"Session ($session_id) publication did not complete successfully"
+                }
             }
             print --stderr $"Warning: session ($session_id)'s run did not finish successfully; inspect the saved metadata/log."
         }
