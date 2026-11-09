@@ -22,3 +22,9 @@ jobs:
         run: |
           python3 .github/scripts/test-push-niks3.py
           python3 .github/scripts/test-niks3-reader.py
+      - uses: DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3 # v3
+        with:
+          source-tag: v3.24.1
+          summarize: false
+      - name: Test session publication dispatch without network access
+        run: nix shell --inputs-from . nixpkgs#nushell -c python3 .github/scripts/test-session-publication.py

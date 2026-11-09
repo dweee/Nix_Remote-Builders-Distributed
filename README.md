@@ -270,6 +270,7 @@ Configure `~/.config/nix-remote/config.toml`:
 repo = "<owner>/<repo>"
 environment = "<env-name>" # Optional: custom GitHub Actions environment containing secrets
 tailscale_tags = "tag:nix-builder" # Optional: custom Tailscale ACL tags
+push_paths = "built" # Optional: select built/all for this session's publication
 ```
 
 ## Usage & Examples
@@ -449,6 +450,12 @@ and pushes them before shutting down:
   (Nix marks them `ultimate`), together with their closures. Inputs that were
   substituted or copied from the client are not pushed on their own.
 - `push_paths: all` pushes every path added during the session.
+
+Set `push_paths = "built"` in the client's configuration for private sessions
+whose copied build-only inputs must not be published independently. The provider
+workflow must expose the `push_paths` dispatch input (see the example). Leaving
+the setting absent preserves older provider workflows and their defaults.
+Runtime references of selected outputs still belong to the published closure.
 
 | Target | Inputs |
 | :--- | :--- |
