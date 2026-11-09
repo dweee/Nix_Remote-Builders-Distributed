@@ -23,7 +23,7 @@ class SessionPublication(unittest.TestCase):
                 config.mkdir(parents=True)
                 system_config = root/'system.toml'
                 system_config.write_text('repo = "fixture/builders"\nwait_for_log = true\n' +
-                                         (f'push_paths = "{system}"\n' if system else ''))
+                                         (f'push_paths = "{system}"\nworkflow_ref = "reviewed-provider-v1"\n' if system else ''))
                 (config/'config.toml').write_text(f'push_paths = "{user}"\n' if user else '')
                 commands = root/'bin'
                 commands.mkdir()
@@ -53,6 +53,10 @@ class SessionPublication(unittest.TestCase):
                 self.assertEqual(arguments[:3], ['workflow', 'run', 'nix-builder.yml'])
                 self.assertIn('target=', arguments)
                 self.assertNotIn('private-target', arguments)
+                if system:
+                    self.assertEqual(arguments[arguments.index('--ref')+1], 'reviewed-provider-v1')
+                else:
+                    self.assertNotIn('--ref', arguments)
                 modes = [arg for arg in arguments if arg.startswith('push_paths=')]
                 self.assertEqual(modes, [] if selected is None else ['push_paths='+selected])
 

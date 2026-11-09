@@ -271,6 +271,7 @@ repo = "<owner>/<repo>"
 environment = "<env-name>" # Optional: custom GitHub Actions environment containing secrets
 tailscale_tags = "tag:nix-builder" # Optional: custom Tailscale ACL tags
 push_paths = "built" # Optional: select built/all for this session's publication
+workflow_ref = "reviewed-provider-v1" # Optional: dispatch a reviewed provider branch or tag
 ```
 
 ## Usage & Examples
