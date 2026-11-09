@@ -533,6 +533,13 @@ run would never be deleted. Set `wait_for_log = true` in `config.toml` (or
 before `nix-remote` returns. The wait also covers the builders' cache push,
 which runs as they shut down.
 
+For a large cold cache push, set `completion_timeout = 3600` to allow an hour
+before the client cancels a session that has not shut down. The default is
+600 seconds; the accepted range is 60–7200 seconds. With `wait_for_log = true`
+and `require_success = true`, an unsuccessful or timed-out provider run fails
+the command. The authenticated run identity and conclusion are saved beside
+the log as `<session id>.json` before any requested run deletion.
+
 ```sh
 nix-remote logs            # list saved session logs
 nix-remote logs b7k2qx     # saved copy, or the run on GitHub if it still exists

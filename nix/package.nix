@@ -4,6 +4,7 @@ pkgs.writeShellApplication {
   runtimeInputs = with pkgs; [
     nushell
     gh
+    jq
     nix-eval-jobs
     nix-fast-build
   ];

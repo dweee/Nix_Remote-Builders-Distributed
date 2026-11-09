@@ -13,6 +13,19 @@ NU = shutil.which('nu')
 
 @unittest.skipUnless(NU, 'Nushell required')
 class SessionPublication(unittest.TestCase):
+    def test_completion_budget_defaults_and_invalid_values(self):
+        for value,expected in [('',600),('3600',3600),('"3600"',None),('0',None),('7201',None)]:
+            with self.subTest(value=value),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);config=root/'system.toml'
+                config.write_text('repo = "fixture/builders"\n'+(f'completion_timeout = {value}\n' if value else ''))
+                env={**os.environ,'HOME':temporary,'XDG_CONFIG_HOME':str(root/'config'),
+                     'NIX_REMOTE_SYSTEM_CONFIG':str(config)}
+                script=('source '+json.dumps(str(ROOT/'src/nix-remote.nu'))+'; '
+                        'resolve-settings null null null null | get completion_timeout | to json')
+                result=subprocess.run([NU,'--no-config-file','-c',script],env=env,capture_output=True,text=True)
+                if expected is None:self.assertNotEqual(result.returncode,0)
+                else:self.assertEqual(json.loads(result.stdout),expected,result.stderr)
+
     def test_session_override_default_compatibility_and_invalid_mode(self):
         for system, user, selected in [('', '', None), ('built', '', 'built'),
                                       ('all', 'built', 'built'), ('all', '', 'all'),
