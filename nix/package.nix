@@ -5,6 +5,7 @@ pkgs.writeShellApplication {
     nushell
     gh
     jq
+    coreutils
     nix-eval-jobs
     nix-fast-build
   ];
