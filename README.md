@@ -540,6 +540,15 @@ and `require_success = true`, an unsuccessful or timed-out provider run fails
 the command. The authenticated run identity and conclusion are saved beside
 the log as `<session id>.json` before any requested run deletion.
 
+That JSON also retains bounded job/step conclusions and annotations from up to
+eight unsuccessful jobs, when GitHub makes them available. Annotations may
+explain a cancellation; they do not always identify its initiator. Diagnostic
+API failures and truncation are marked in the record and do not prevent run
+deletion or change the required provider conclusion. Completion-window cancel
+requests made by this reaper include a local timestamp and reason. A null
+`localCancel` means no reaper record was found, not that no other process
+cancelled the run. These diagnostics stay in the local private log directory.
+
 ```sh
 nix-remote logs            # list saved session logs
 nix-remote logs b7k2qx     # saved copy, or the run on GitHub if it still exists

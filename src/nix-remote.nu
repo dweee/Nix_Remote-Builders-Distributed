@@ -510,7 +510,61 @@ def session-run [repo: string, session_id: string]: nothing -> any {
 # repository. Runs from a detached process.
 def reap-run [settings: record, session_id: string] {
     let script = '
+        umask 077
         repo="$1" session="$2" dir="$3" delete="$4" completion="$5" required="$6"
+        record_cancel() {
+            mkdir -p "$dir" && chmod 700 "$dir" || return 1
+            jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson run "$1" \
+                "{by: \"nix-remote-reaper\", reason: \"completion-window\", run: \$run, at: \$at}" \
+                > "$dir/$session.cancel.tmp" && mv "$dir/$session.cancel.tmp" "$dir/$session.cancel"
+        }
+        capture_diagnostics() {
+            # Diagnostic failures must not change provider success or prevent
+            # requested deletion. Keep the required identity record separate.
+            attempt=$(jq -r ".attempt // 1" "$dir/$session.json")
+            if timeout --kill-after=5s 20s gh api "repos/$repo/actions/runs/$id/attempts/$attempt/jobs?per_page=100" \
+                    > "$dir/$session.jobs.raw" 2>/dev/null &&
+                jq --arg prefix "https://api.github.com/repos/$repo/check-runs/" \
+                    "{status: \"available\", truncated: (.total_count > 100), jobs: [.jobs[:100][] | {
+                        databaseId: .id, name: (.name[:200]), status, conclusion,
+                        startedAt: .started_at, completedAt: .completed_at,
+                        steps: [.steps[:100][]? | {number, name: (.name[:200]), status, conclusion,
+                            startedAt: .started_at, completedAt: .completed_at}],
+                        checkRunId: (if ((.check_run_url // \"\") | startswith(\$prefix))
+                            then (try (.check_run_url | ltrimstr(\$prefix) | tonumber) catch null) else null end)
+                    }]}" "$dir/$session.jobs.raw" > "$dir/$session.jobs.tmp"; then
+                :
+            else
+                printf "%s\n" "{\"status\":\"unavailable\",\"jobs\":[],\"truncated\":false}" > "$dir/$session.jobs.tmp"
+            fi
+            : > "$dir/$session.ann.tmp"
+            # Limit both API requests and retained text. Job IDs and check-run
+            # IDs are distinct: use the check_run_url from the jobs API.
+            while read -r job check; do
+                if [ -n "$check" ] && timeout --kill-after=5s 20s gh api \
+                        "repos/$repo/check-runs/$check/annotations?per_page=100" \
+                        > "$dir/$session.ann.raw" 2>/dev/null &&
+                    jq --argjson job "$job" --argjson check "$check" \
+                        "{job: \$job, checkRunId: \$check, status: \"available\", truncated: (length >= 100),
+                            entries: [.[:100][] | {level: .annotation_level,
+                                title: ((.title // \"\")[:200]), message: ((.message // \"\")[:1000])}]}" \
+                        "$dir/$session.ann.raw" >> "$dir/$session.ann.tmp"; then
+                    :
+                else
+                    jq -n --argjson job "$job" \
+                        "{job: \$job, status: \"unavailable\", entries: []}" >> "$dir/$session.ann.tmp"
+                fi
+            done < <(jq -r ".jobs | map(select(.conclusion != \"success\" and .conclusion != \"skipped\")) | .[:8][] | [.databaseId, .checkRunId] | @tsv" "$dir/$session.jobs.tmp")
+            if [ ! -f "$dir/$session.cancel" ]; then printf "null\n" > "$dir/$session.cancel"; fi
+            jq -s --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --slurpfile jobs "$dir/$session.jobs.tmp" --slurpfile cancel "$dir/$session.cancel" \
+                ".[0] + {reapedAt: \$at, localCancel: \$cancel[0], jobs: \$jobs[0].jobs,
+                    diagnostics: {jobsStatus: \$jobs[0].status, jobsTruncated: \$jobs[0].truncated,
+                        annotationJobsTruncated: ([\$jobs[0].jobs[] | select(.conclusion != \"success\" and .conclusion != \"skipped\")] | length > 8),
+                        annotations: .[1:]}}" \
+                "$dir/$session.json" "$dir/$session.ann.tmp" > "$dir/$session.json.tmp" &&
+                mv "$dir/$session.json.tmp" "$dir/$session.json"
+        }
         steps=$(((completion + 120 + 14) / 15))
         if [ "$steps" -lt 120 ]; then steps=120; fi
         cancelled=false
@@ -521,7 +575,10 @@ def reap-run [settings: record, session_id: string] {
             if [ $((n * 15)) -ge "$completion" ] && [ "$cancelled" = false ]; then
                 cancelled=true
                 open=$(gh run list --repo "$repo" --limit 50 --json databaseId,status,displayTitle                     --jq ".[] | select(.status != \"completed\") | select(.displayTitle | contains(\"[$session]\")) | .databaseId"                     2>/dev/null | head -n 1)
-                if [ -n "$open" ]; then gh run cancel "$open" --repo "$repo" >/dev/null 2>&1; fi
+                if [ -n "$open" ]; then
+                    record_cancel "$open" || true
+                    gh run cancel "$open" --repo "$repo" >/dev/null 2>&1
+                fi
             fi
             id=$(gh run list --repo "$repo" --limit 50 --json databaseId,status,displayTitle \
                 --jq ".[] | select(.status == \"completed\") | select(.displayTitle | contains(\"[$session]\")) | .databaseId" \
@@ -529,9 +586,12 @@ def reap-run [settings: record, session_id: string] {
             if [ -n "$id" ]; then
                 mkdir -p "$dir" && chmod 700 "$dir"
                 # Save authenticated API identity/conclusion before deletion.
-                gh run view "$id" --repo "$repo" --json databaseId,headSha,status,conclusion,displayTitle \
+                gh run view "$id" --repo "$repo" --json databaseId,headSha,status,conclusion,displayTitle,attempt,createdAt,startedAt,updatedAt \
                     > "$dir/$session.json.tmp" 2>/dev/null || exit 1
                 mv "$dir/$session.json.tmp" "$dir/$session.json"
+                capture_diagnostics || true
+                rm -f "$dir/$session.jobs.raw" "$dir/$session.jobs.tmp" "$dir/$session.ann.raw" \
+                    "$dir/$session.ann.tmp" "$dir/$session.cancel" "$dir/$session.cancel.tmp" "$dir/$session.json.tmp"
                 # Logs can lag completion by a few seconds.
                 for _ in 1 2 3 4 5 6; do
                     gh run view "$id" --repo "$repo" --log > "$dir/$session.log.tmp" 2>/dev/null \
