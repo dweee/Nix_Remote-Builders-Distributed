@@ -13,6 +13,34 @@ NU = shutil.which('nu')
 
 @unittest.skipUnless(NU, 'Nushell required')
 class SessionPublication(unittest.TestCase):
+    def test_userspace_opt_in_is_boolean_and_only_forwarded_when_enabled(self):
+        for configured, forwarded in [('', False), ('false', False), ('true', True),
+                                       ('"true"', None), ('1', None)]:
+            with self.subTest(configured=configured), tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);commands=root/'bin';commands.mkdir()
+                system=root/'system.toml'
+                system.write_text('repo = "fixture/builders"\nwait_for_log = true\n'+
+                    (f'experimental_darwin_userspace = {configured}\n' if configured else ''))
+                (commands/'gh').write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$CAPTURE"\nexit 1\n')
+                for name in ['bash','ssh']:(commands/name).write_text('#!/bin/sh\nexit 0\n')
+                for command in commands.iterdir():command.chmod(0o755)
+                capture=root/'dispatch'
+                env={**os.environ,'PATH':str(commands)+os.pathsep+os.environ['PATH'],
+                     'HOME':temporary,'XDG_CONFIG_HOME':str(root/'config'),
+                     'XDG_STATE_HOME':str(root/'state'),'NIX_REMOTE_SYSTEM_CONFIG':str(system),
+                     'CAPTURE':str(capture)}
+                script=('source '+json.dumps(str(ROOT/'src/nix-remote.nu'))+'; '
+                        'let s = resolve-settings null null null null; '
+                        'start-session "gha" $s {x86: 0, arm: 0, darwin: 1} "public-fixture" '
+                        '{startup: 1200, idle: 900, linger: 0} 0')
+                result=subprocess.run([NU,'--no-config-file','-c',script],env=env,capture_output=True,text=True,timeout=15)
+                self.assertNotEqual(result.returncode,0)
+                if forwarded is None:
+                    self.assertFalse(capture.exists())
+                    self.assertIn('must be a boolean',result.stderr)
+                else:
+                    self.assertEqual('experimental_darwin_userspace=true' in capture.read_text().splitlines(),forwarded)
+
     def test_completion_budget_defaults_and_invalid_values(self):
         for value,expected in [('',600),('3600',3600),('"3600"',None),('0',None),('7201',None)]:
             with self.subTest(value=value),tempfile.TemporaryDirectory() as temporary:

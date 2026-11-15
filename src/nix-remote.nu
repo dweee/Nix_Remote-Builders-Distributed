@@ -66,6 +66,10 @@ def resolve-settings [
     let config_file = config-file
     let push_paths = $config | get --optional push_paths
     let completion_timeout = $config | get --optional completion_timeout | default 600
+    let darwin_userspace = $config | get --optional experimental_darwin_userspace | default false
+    if ($darwin_userspace | describe) != "bool" {
+        error make {msg: "experimental_darwin_userspace must be a boolean"}
+    }
     if ($completion_timeout | describe) != "int" or $completion_timeout < 60 or $completion_timeout > 7200 {
         error make {msg: "completion_timeout must be an integer from 60 to 7200 seconds"}
     }
@@ -130,6 +134,7 @@ def resolve-settings [
         # Omit this input by default for older provider workflows.
         push_paths: $push_paths
         workflow_ref: ($config | get --optional workflow_ref)
+        experimental_darwin_userspace: $darwin_userspace
         completion_timeout: $completion_timeout
         require_success: (($config | get --optional require_success) == true)
         delete_runs: (($config | get --optional delete_runs) == true)
@@ -844,6 +849,11 @@ def start-session [
         }
         if $settings.workflow_ref != null {
             $gh_args ++= [--ref $settings.workflow_ref]
+        }
+        # Omit the new input by default so existing immutable providers and
+        # ordinary native sessions remain compatible. The workflow gates Mac.
+        if $settings.experimental_darwin_userspace {
+            $gh_args ++= [-f "experimental_darwin_userspace=true"]
         }
 
         let dispatch_res = gh ...$gh_args | complete
