@@ -24,6 +24,10 @@ on:
         description: "Tailscale ACL tags to apply to runner nodes"
         default: "tag:nix-builder"
         type: string
+      experimental_darwin_userspace:
+        description: "Experimental Darwin-only native-TUN avoidance comparison"
+        type: boolean
+        default: false
       timeout_startup:
         description: "Wait for first connection in seconds"
         default: "300"
@@ -59,6 +63,10 @@ on:
         description: "Tailscale ACL tags to apply to runner nodes"
         default: "tag:nix-builder"
         type: string
+      experimental_darwin_userspace:
+        description: "Experimental Darwin-only native-TUN avoidance comparison"
+        type: boolean
+        default: false
       timeout_startup:
         description: "Wait for first connection in seconds"
         default: "300"
@@ -456,7 +464,127 @@ jobs:
           test -x "$daemon"
           env -i PATH=/usr/local/bin:/usr/bin:/bin /bin/bash -c 'command -v nix-daemon'
 
+      - name: "Prepare opt-in Darwin userspace DNS guard"
+        if: runner.os == 'macOS' && inputs.experimental_darwin_userspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          cat > "$RUNNER_TEMP/darwin-userspace.py" <<'PYTHON'
+          """Disposable Mac comparison only; stdout contains fixed labels/counters."""
+          import ipaddress
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import socket
+          import stat
+          import subprocess
+          import sys
+
+
+          def command(args):
+              try:
+                  result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+              except (OSError, subprocess.SubprocessError):
+                  raise RuntimeError('command-unavailable') from None
+              if result.returncode or len(result.stdout) > 262144:
+                  raise RuntimeError('command-rejected')
+              return result.stdout.strip()
+
+
+          def dns_values(text, kind):
+              if text == "There aren't any DNS Servers set on Ethernet." and kind == 'dns':
+                  return []
+              if text == "There aren't any Search Domains set on Ethernet." and kind == 'search':
+                  return []
+              values = text.splitlines()
+              if not 0 < len(values) <= 16:
+                  raise RuntimeError('invalid-dns-state')
+              for value in values:
+                  if kind == 'dns':
+                      ipaddress.ip_address(value)
+                      if value == '100.100.100.100':
+                          raise RuntimeError('preexisting-tailnet-resolver')
+                  elif not re.fullmatch(r'[A-Za-z0-9_.-]{1,253}', value):
+                      raise RuntimeError('invalid-search-state')
+              return values
+
+
+          def public_dns():
+              command([sys.executable, '-c',
+                  "import socket; [socket.getaddrinfo(h,443,type=socket.SOCK_STREAM) for h in ['github.com','cache.nixos.org']]"])
+
+
+          def dns(operation, path):
+              if operation == 'save':
+                  public_dns()
+                  value = {kind:dns_values(command(['/usr/sbin/networksetup', flag, 'Ethernet']), kind)
+                           for kind,flag in [('dns','-getdnsservers'),('search','-getsearchdomains')]}
+                  descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                  with os.fdopen(descriptor, 'w') as output:
+                      json.dump(value, output)
+              else:
+                  descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                  with os.fdopen(descriptor) as source:
+                      info = os.fstat(source.fileno())
+                      if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 8192
+                              or info.st_uid != os.geteuid() or info.st_mode & 0o077):
+                          raise RuntimeError('unsafe-dns-snapshot')
+                      value = json.load(source)
+                  if set(value) != {'dns','search'}:
+                      raise RuntimeError('invalid-dns-snapshot')
+                  for kind,flag in [('dns','-setdnsservers'),('search','-setsearchdomains')]:
+                      values = value[kind]
+                      if not isinstance(values, list) or any(not isinstance(v,str) for v in values):
+                          raise RuntimeError('invalid-dns-snapshot')
+                      if values:
+                          dns_values('\n'.join(values), kind)
+                      command(['sudo','/usr/sbin/networksetup',flag,'Ethernet',*(values or ['Empty'])])
+                  public_dns()
+              print(json.dumps({'kind':'userspace-dns','restored':operation == 'restore','publicDns':True}))
+
+
+          def sample():
+              value = {'kind':'userspace-network-health','at':int(__import__('time').time())}
+              try:
+                  status = json.loads(command(['tailscale','status','--json']))
+                  if not isinstance(status, dict) or not isinstance(status.get('Self'),dict):
+                      raise RuntimeError('invalid-self-status')
+                  value['running'] = status.get('BackendState') == 'Running'
+                  value['selfOnline'] = (status.get('Self') or {}).get('Online') is True
+              except (RuntimeError,ValueError,TypeError):
+                  value['statusAvailable'] = False
+              for key in ['kern.num_files','kern.maxfiles','kern.ipc.nmbclusters']:
+                  try:
+                      text = command(['/usr/sbin/sysctl','-n',key])
+                      if re.fullmatch(r'[0-9]{1,18}',text):value[key] = int(text)
+                  except RuntimeError:
+                      pass
+              try:
+                  text = command(['/usr/sbin/netstat','-m'])
+                  for key,pattern in [('mbufDenied',r'(?m)^\s*(\d+) requests for memory denied'),
+                                      ('mbufDelayed',r'(?m)^\s*(\d+) requests for memory delayed'),
+                                      ('mbufDrain',r'(?m)^\s*(\d+) calls to protocol drain routines')]:
+                      match = re.search(pattern,text)
+                      if match:value[key] = int(match[1])
+              except RuntimeError:
+                  pass
+              print(json.dumps(value))
+
+
+          if __name__ == '__main__':
+              try:
+                  if sys.argv[1] == 'sample':sample()
+                  else:dns(sys.argv[1],Path(sys.argv[2]))
+              except (RuntimeError,ValueError,OSError,KeyError,TypeError):
+                  print('userspace-comparison-check-failed',file=sys.stderr)
+                  sys.exit(1)
+          PYTHON
+          python3 "$RUNNER_TEMP/darwin-userspace.py" save "$RUNNER_TEMP/darwin-userspace-dns.json"
+
       - name: "Connect Tailscale with SSH"
+        if: ${{ !(runner.os == 'macOS' && inputs.experimental_darwin_userspace) }}
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
@@ -466,7 +594,29 @@ jobs:
           hostname: "nix-builder-${{ inputs.session_id }}-${{ matrix.id }}"
           args: "--ssh"
 
+      - name: "Connect opt-in Darwin userspace Tailscale with SSH"
+        if: runner.os == 'macOS' && inputs.experimental_darwin_userspace
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4
+        with:
+          version: "1.104.4"
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: ${{ inputs.tailscale_tags }}
+          hostname: "nix-builder-${{ inputs.session_id }}-${{ matrix.id }}"
+          tailscaled-args: "--tun=userspace-networking"
+          args: "--ssh --accept-dns=false"
+
+      - name: "Restore public DNS after opt-in userspace setup"
+        if: always() && runner.os == 'macOS' && inputs.experimental_darwin_userspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/darwin-userspace.py" restore "$RUNNER_TEMP/darwin-userspace-dns.json"
+
       - name: "Watchdog: Connection & Idle Lifecycle"
+        env:
+          DARWIN_USERSPACE: ${{ runner.os == 'macOS' && inputs.experimental_darwin_userspace }}
         shell: bash
         run: |
           TIMEOUT_STARTUP="${{ inputs.timeout_startup }}"
@@ -481,7 +631,14 @@ jobs:
           echo "Builder ready on Tailnet (Tailscale SSH enabled)!"
           echo "Watchdog config: startup=${TIMEOUT_STARTUP}s, idle=${TIMEOUT_IDLE}s, linger=${TIMEOUT_LINGER}s"
 
+          DIAG_SAMPLES=0
+          DIAG_NEXT=0
           while true; do
+            if [ "$DARWIN_USERSPACE" = true ] && [ "$DIAG_SAMPLES" -lt 121 ] && [ "$SECONDS" -ge "$DIAG_NEXT" ]; then
+              python3 "$RUNNER_TEMP/darwin-userspace.py" sample || true
+              DIAG_SAMPLES=$((DIAG_SAMPLES + 1))
+              DIAG_NEXT=$((SECONDS + 60))
+            fi
             # Explicit completion signal received
             if [ -f "$SIGNAL_FILE" ]; then
               if [ "$TIMEOUT_LINGER" -gt 0 ]; then
