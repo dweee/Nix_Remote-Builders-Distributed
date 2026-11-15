@@ -629,7 +629,7 @@ Each provisioned cloud runner runs a resilient background watchdog script that g
 | Lifecycle Phase | Parameter / Signal | Default | Description |
 | :--- | :--- | :--- | :--- |
 | **Startup Wait** | `timeout_startup` / `--timeout-startup` | `300s` | Runner waits for the local client to establish its first SSH connection. Auto-cancels if client never connects. Set `0` to disable. |
-| **Idle Monitor** | `timeout_idle` / `--timeout-idle` | `300s` | Tracks active SSH connections (`ss` / `lsof`) and `nix-daemon` activity. When connections drop to zero and remain idle past this threshold, the runner safely terminates. Set `0` to disable idle teardown. |
+| **Idle Monitor** | `timeout_idle` / `--timeout-idle` | `300s` | Tracks active SSH connections (`ss` / `lsof`) and per-connection `nix-daemon --stdio` processes. The permanent system daemon does not count as activity. When connections drop to zero and remain idle past this threshold, the watchdog exits and publication can run. Set `0` to disable idle teardown. |
 | **Completion Signal** | `/tmp/nix-builder-done` | - | `nix-remote` sends `ssh runner@<host> touch /tmp/nix-builder-done` as soon as the build finishes (unless `--keep-alive` is set). |
 | **Post-Build Linger**| `timeout_linger` / `--timeout-linger` | `0s` | Once `/tmp/nix-builder-done` is signaled, the runner remains alive for this extra duration before shutting down (useful for running rapid successive builds on a warm runner). |
 

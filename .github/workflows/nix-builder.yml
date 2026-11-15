@@ -501,7 +501,9 @@ jobs:
             else
               ACTIVE_SSH=0
             fi
-            ACTIVE_NIX=$(pgrep -f "nix-daemon" 2>/dev/null | wc -l || true)
+            # The permanent system daemon is not a client connection. Only
+            # ssh-ng's per-connection stdio process keeps this session busy.
+            ACTIVE_NIX=$(pgrep -f '(^|/)nix-daemon[[:space:]]+--stdio([[:space:]]|$)' 2>/dev/null | wc -l || true)
 
             if [ "$ACTIVE_SSH" -gt 0 ] || [ "$ACTIVE_NIX" -gt 0 ]; then
               if [ "$CONNECTED_ONCE" = false ]; then
