@@ -624,6 +624,12 @@ Requirements and caveats:
 
 ## Runner Lifecycle & Watchdog
 
+`experimental_darwin_userspace = true` in the client config opts Darwin sessions
+into a compatible provider's userspace comparison path. It defaults to false;
+the dispatch input is omitted unless true, preserving older immutable providers.
+The provider must support this input and its DNS handling; this config does not
+change authentication, admission or any installed executor automatically.
+
 Each provisioned cloud runner runs a resilient background watchdog script that governs its lifecycle, idle teardown, and self-destruction:
 
 | Lifecycle Phase | Parameter / Signal | Default | Description |
