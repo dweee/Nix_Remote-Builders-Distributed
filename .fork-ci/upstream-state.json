@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "upstream": "Malix-Labs/Nix_Remote-Builders-Distributed",
+  "track": "branch",
+  "branch": "7ca9d24566b71567d4cb26cc19e70c8b5a69a380"
+}
