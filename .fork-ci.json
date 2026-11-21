@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "upstream": "Malix-Labs/Nix_Remote-Builders-Distributed",
+  "branch": "main",
+  "track": "branch",
+  "author": {
+    "name": "dave",
+    "email": "git@d.monke.fail"
+  },
+  "required_paths": [
+    "flake.nix",
+    "flake.lock"
+  ],
+  "protected_paths": [
+    "flake.nix",
+    "flake.lock",
+    "nix/**",
+    "ci/**"
+  ],
+  "matrix": [
+    {
+      "system": "x86_64-linux",
+      "packages": [
+        "default"
+      ],
+      "checks": [],
+      "tests": [
+        [
+          "python3",
+          ".github/scripts/test-watchdog.py"
+        ],
+        [
+          "python3",
+          ".github/scripts/test-session-completion.py"
+        ]
+      ]
+    }
+  ]
+}
