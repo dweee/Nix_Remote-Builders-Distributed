@@ -22,3 +22,4 @@ jobs:
       tool-revision: 9e639dd658afcc5c2118ad255a6929a6a922a86a
       auto-merge: ${{ vars.FORK_CI_AUTO_MERGE == 'true' && (vars.NIKS3_PUSH_ENABLED || vars.ATTIC_PUSH_ENABLED) == 'true' }}
       cache: false
+      check-workflow: pr-test.yml
