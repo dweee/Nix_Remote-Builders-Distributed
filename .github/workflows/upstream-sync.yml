@@ -17,10 +17,10 @@ jobs:
       pull-requests: write
       actions: write
       checks: read
-    uses: dweee/dave-fork-ci/.github/workflows/upstream-sync.yml@e91729832cec7afa9258557b4a490157c9a57b16
+    uses: dweee/dave-fork-ci/.github/workflows/upstream-sync.yml@84e6e965fb4ec7b343cba352999d6660161ddba0
     with:
       tool-repository: dweee/dave-fork-ci
-      tool-revision: e91729832cec7afa9258557b4a490157c9a57b16
-      auto-merge: ${{ vars.FORK_CI_AUTO_MERGE == 'true' && (vars.NIKS3_PUSH_ENABLED || vars.ATTIC_PUSH_ENABLED) == 'true' }}
+      tool-revision: 84e6e965fb4ec7b343cba352999d6660161ddba0
+      auto-merge: ${{ vars.FORK_CI_AUTO_MERGE == 'true' && vars.NIKS3_PUSH_ENABLED == 'true' }}
       cache: false
       check-workflow: pr-test.yml

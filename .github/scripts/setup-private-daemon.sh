@@ -15,11 +15,11 @@ test -f "$source_file"
 test -f "$refresh_source"
 state=/nix/var/nix/nix-remote-private
 install -d -m 0700 "$state"
-install -m 0600 "$source_file" "$state/attic.netrc"
+install -m 0600 "$source_file" "$state/private.netrc"
 install -m 0700 "$refresh_source" "$state/refresh.pl"
 printf 'netrc-file = %s/combined.netrc\n' "$state" > "$state/nix.conf"
 chmod 0600 "$state/nix.conf"
-refresh=(/usr/bin/perl "$state/refresh.pl" "$state/attic.netrc" /nix/var/determinate/netrc "$state/combined.netrc" ${oidc_source:+"$oidc_source"})
+refresh=(/usr/bin/perl "$state/refresh.pl" "$state/private.netrc" /nix/var/determinate/netrc "$state/combined.netrc" ${oidc_source:+"$oidc_source"})
 "${refresh[@]}"
 
 case "$(uname -s)" in
@@ -28,14 +28,14 @@ case "$(uname -s)" in
     cat > /etc/systemd/system/nix-daemon.service.d/90-nix-remote-private.conf <<EOF
 [Service]
 Environment=NIX_USER_CONF_FILES=$state/nix.conf
-ExecStartPre=/usr/bin/perl $state/refresh.pl $state/attic.netrc /nix/var/determinate/netrc $state/combined.netrc $oidc_source
+ExecStartPre=/usr/bin/perl $state/refresh.pl $state/private.netrc /nix/var/determinate/netrc $state/combined.netrc $oidc_source
 EOF
     cat > /etc/systemd/system/nix-remote-private-refresh.service <<EOF
 [Unit]
 Description=Refresh private remote-builder Nix credentials
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/perl $state/refresh.pl $state/attic.netrc /nix/var/determinate/netrc $state/combined.netrc $oidc_source
+ExecStart=/usr/bin/perl $state/refresh.pl $state/private.netrc /nix/var/determinate/netrc $state/combined.netrc $oidc_source
 EOF
     cat > /etc/systemd/system/nix-remote-private-refresh.timer <<'EOF'
 [Unit]
@@ -74,7 +74,7 @@ EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>fail.monke.nix-remote-private-refresh</string>
-<key>ProgramArguments</key><array><string>/usr/bin/perl</string><string>$state/refresh.pl</string><string>$state/attic.netrc</string><string>/nix/var/determinate/netrc</string><string>$state/combined.netrc</string>${oidc_source:+<string>$oidc_source</string>}</array>
+<key>ProgramArguments</key><array><string>/usr/bin/perl</string><string>$state/refresh.pl</string><string>$state/private.netrc</string><string>/nix/var/determinate/netrc</string><string>$state/combined.netrc</string>${oidc_source:+<string>$oidc_source</string>}</array>
 <key>RunAtLoad</key><true/><key>StartInterval</key><integer>30</integer>
 </dict></plist>
 EOF

@@ -23,8 +23,8 @@ nix run github:Malix-Labs/Nix_Remote-Builders-Distributed -- build .#myHeavyPack
 - **Multi-Arch Matrix**: Automatically scales and allocates native `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin` runners in parallel according to real unbuilt derivation requirements.
 - **Direct WireGuard Tunneling (Tailscale SSH)**: End-to-end encrypted connection authenticated via secretless OIDC (Workload Identity Federation) or OAuth. No port forwarding, public IPs, or firewall holes needed.
 - **Drop-in Nix Replacement**: Seamlessly prefix standard commands (`build`, `flake check`) or use `--fast` for pipelined builds with `nix-fast-build`.
-- **Binary Cache Push**: Builders push the outputs they built to [Attic](https://github.com/zhaofengli/attic) or any `nix copy` store before they shut down.
-- **Builder-Side Substitution**: Builders fetch dependencies from cache.nixos.org, your own caches and private Attic caches instead of receiving them from your machine.
+- **Binary Cache Push**: Builders push the outputs they built to Niks3 or any `nix copy` store before they shut down.
+- **Builder-Side Substitution**: Builders fetch dependencies from cache.nixos.org, your own caches and a private Niks3 cache instead of receiving them from your machine.
 - **Any Build Command**: `nix-remote exec -- nh os switch` wraps nh, nixos-rebuild, darwin-rebuild, home-manager or anything else that calls Nix. `nix-remote up` registers builders with the nix-daemon so that every build on the machine uses them.
 - **Callable from Forgejo/Gitea**: A composite action runs the client inside a Forgejo Actions job, so an on-prem forge can build private flakes on these builders.
 
@@ -434,13 +434,9 @@ adds:
 | :--- | :--- |
 | `substituters` / `trusted_public_keys` | Space-separated extra substituters and their keys. |
 | `extra_nix_conf` | Extra lines for the builders' `nix.conf`. |
-| `attic_server` + `attic_cache` | Adds the Attic cache as a substituter (`attic_substitute: "false"` to skip). Its substituter URL and public key are read from the server's `/_api/v1/cache-config/<cache>` unless `attic_substituter` and `attic_public_key` are set. |
-| `secrets.ATTIC_TOKEN` | Written to the builders' netrc so private Attic caches can be read. |
 | `secrets.NIX_NETRC` | netrc contents for any other authenticated substituter. |
 
 The substituter configuration is resolved before the builder joins the tailnet.
-For a tailnet-only Attic server, set `attic_substituter` and `attic_public_key`
-explicitly so that no API call is needed at that point.
 
 ### Pushing built outputs
 
@@ -460,28 +456,19 @@ Runtime references of selected outputs still belong to the published closure.
 
 | Target | Inputs |
 | :--- | :--- |
-| Attic | `attic_server`, `attic_cache`, `secrets.ATTIC_TOKEN` (push permission). `attic_push: "false"` to only substitute. Attic skips paths already signed by its upstream caches. |
-| Niks3 | `niks3_push: "true"`, `niks3_server` or `secrets.NIKS3_ENDPOINT`. Uses GitHub OIDC; the caller must grant `id-token: write` and the server must allow its repository, event and ref. No static fleet credential is needed. Set `niks3_substitute: "true"` to read the shared Flakey cache using a separate read-only audience. The reader refreshes throughout the session and is merged into the daemon-only netrc alongside managed Determinate credentials. PR events are rejected. Our caller disables Attic substitution/publication explicitly; generic Attic inputs remain available for other callers. |
+| Niks3 | `niks3_push: "true"`, `niks3_server` or `secrets.NIKS3_ENDPOINT`. Uses GitHub OIDC; the caller must grant `id-token: write` and the server must allow its repository, event and ref. No static fleet credential is needed. Set `niks3_substitute: "true"` to read the shared Flakey cache using a separate read-only audience. The reader refreshes throughout the session and is merged into the daemon-only netrc alongside managed Determinate credentials. PR events are rejected. |
 | Any Nix store | `push_to`, e.g. `s3://bucket?region=eu-west-1`, `file:///…`, `ssh-ng://cache-host`. `secrets.NIX_SIGNING_KEY` signs the paths first. `secrets.AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` for S3. |
 
-Niks3 publication is off by default and independent of Attic substitution and
-push. It uses the pinned Niks3 client with integrity verification and refreshes
+Niks3 publication is off by default. It uses the pinned Niks3 client with integrity verification and refreshes
 the audience-specific JWT during long uploads. Token files are private and
 removed after publication; per-path diagnostics stay out of public logs even
 with `verbose_logs`. The publisher sets `http2 = false` for large NARs.
 It does not enable Niks3 reads or add it as a substituter. For a private cache,
-read access is a separate owner decision; Attic-only builders may rebuild paths
-that other CI publishers have uploaded only to Niks3.
+read access is a separate owner decision.
 
 #### Backblaze B2
 
-Attic stores its chunks in S3-compatible object storage, so the usual route is
-Attic with B2 as its `[storage]` backend (`type = "s3"`, `endpoint =
-"https://s3.<region>.backblazeb2.com"`). Builders push to Attic, and Attic
-handles signing, deduplication and B2. Attic clients cannot write to the bucket
-directly.
-
-To skip Attic, push a plain Nix binary cache straight to B2 through its S3 API:
+Push a plain Nix binary cache straight to B2 through its S3 API:
 
 ```yaml
 push_to: "s3://<bucket>?endpoint=s3.<region>.backblazeb2.com&region=<region>&compression=zstd"
@@ -491,7 +478,7 @@ secrets:
   NIX_SIGNING_KEY: ${{ secrets.NIX_SIGNING_KEY }}      # `nix key generate-secret`
 ```
 
-Without Attic there is no chunk deduplication or garbage collection. Every
+There is no chunk deduplication or garbage collection. Every
 closure path that the bucket lacks is uploaded, including ones on
 cache.nixos.org.
 
@@ -499,7 +486,7 @@ The log reports path counts only; per-path output is shown only if a push
 fails. Pushes happen after the client has disconnected, so the cache fills a
 few seconds after `nix-remote` returns. The example
 [`examples/nix-builder.yml`](examples/nix-builder.yml) reads these settings
-from repository secrets (`ATTIC_ENDPOINT`, `ATTIC_CACHE`, `NIX_SUBSTITUTERS`, …;
+from repository secrets (`NIX_SUBSTITUTERS`, `NIX_PUSH_TO`, …;
 see the file header). Use secrets rather than `with:` inputs or variables in a
 public repository: GitHub prints those in the run log before any mask applies,
 but masks secrets everywhere. An input, when set, takes precedence over the
@@ -515,7 +502,7 @@ though. The template and client keep metadata out of them:
 | What | How |
 | :--- | :--- |
 | Command being built | Not sent: `target` stays empty and the run name is `nix-remote [<random session id>]`. Set `show_target = true` in `config.toml` to send it. |
-| Cache URLs, keys, Attic endpoint and cache name | `::add-mask::` before any other step, so the Nix installer and later steps print `***`. |
+| Cache URLs, keys and push targets | `::add-mask::` before any other step, so the Nix installer and later steps print `***`. |
 | Store paths | Pushes log counts only. Per-path output needs `verbose_logs: "true"`. |
 | Build outputs in the Actions cache | `magic_nix_cache: "false"`: workflows from fork pull requests can read a public repository's caches. |
 | Run history and logs | `delete_runs = true` in `config.toml`: a detached process deletes the session's run once it completes. `purge_runs: "true"` also deletes earlier completed runs when a session starts, as a backstop. Set log retention to 1 day. |
