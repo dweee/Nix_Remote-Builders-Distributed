@@ -23,7 +23,7 @@ trap cleanup EXIT
 cat > "$wrapper" <<SCRIPT
 #!/bin/sh
 set -eu
-/usr/bin/perl /nix/var/nix/nix-remote-private/refresh.pl /nix/var/nix/nix-remote-private/attic.netrc /nix/var/determinate/netrc /nix/var/nix/nix-remote-private/combined.netrc $oidc_source
+/usr/bin/perl /nix/var/nix/nix-remote-private/refresh.pl /nix/var/nix/nix-remote-private/private.netrc /nix/var/determinate/netrc /nix/var/nix/nix-remote-private/combined.netrc $oidc_source
 exec /usr/local/bin/determinate-nixd daemon
 SCRIPT
 chmod 700 "$wrapper"
