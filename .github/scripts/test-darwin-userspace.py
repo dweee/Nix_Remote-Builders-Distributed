@@ -30,7 +30,7 @@ class UserspaceCandidate(unittest.TestCase):
             self.assertIn(setting,userspace)
         self.assertIn('if: always() && runner.os == \'macOS\' && inputs.experimental_darwin_userspace',WORKFLOW)
         # No change to the independently pinned helper checkout/admission.
-        self.assertIn('ref: ec93e20fa4f4cde86c551ea8ea4da29b8c423b42',WORKFLOW)
+        self.assertIn('ref: 886d11b4b7c096383adfb60fc5daaa2e4cbe2074',WORKFLOW)
         self.assertIn('"$DIAG_SAMPLES" -lt 121',WORKFLOW)
         self.assertIn('DIAG_NEXT=$((SECONDS + 60))',WORKFLOW)
 

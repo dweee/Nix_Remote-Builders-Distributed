@@ -20,15 +20,9 @@
 # before any mask applies, but masks secrets everywhere.
 #   secrets.NIX_SUBSTITUTERS        extra substituters (space-separated)
 #   secrets.NIX_TRUSTED_PUBLIC_KEYS their public keys (space-separated)
-#   secrets.ATTIC_ENDPOINT          Attic server, e.g. https://attic.example.com
-#   secrets.ATTIC_CACHE             Attic cache name
-#   secrets.ATTIC_SUBSTITUTER       optional; resolved from the server when unset
-#   secrets.ATTIC_PUBLIC_KEY        optional; resolved from the server when unset
-#   secrets.ATTIC_TOKEN             Attic token (pull + push)
 #   secrets.NIX_PUSH_TO             generic `nix copy --to` store URI
 #   secrets.NIX_NETRC               netrc for other authenticated substituters
 #   secrets.NIX_SIGNING_KEY         signs paths before NIX_PUSH_TO copies
-#   vars.ATTIC_PUSH_ENABLED         set to "false" to substitute without pushing
 
 name: "Nix Remote Builder"
 # Only the random session ID; nix-remote leaves `target` empty unless
@@ -98,7 +92,6 @@ jobs:
       timeout_idle: ${{ inputs.timeout_idle != '' && format('{0}', inputs.timeout_idle) || '300' }}
       timeout_linger: ${{ inputs.timeout_linger != '' && format('{0}', inputs.timeout_linger) || '0' }}
       push_paths: ${{ inputs.push_paths }}
-      attic_push: ${{ vars.ATTIC_PUSH_ENABLED != 'false' && 'true' || 'false' }}
       magic_nix_cache: "false"
       purge_runs: "true"
     secrets: inherit
